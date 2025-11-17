@@ -19,8 +19,8 @@
 {
   # set exposure data names
   exp_data_names <- list.dirs(here("data", "exposure", "AP_DATA"), recursive = TRUE) |> 
-    discard(~ str_detect(basename(.x), regex("ap_data", ignore_case = TRUE))) |> 
-    keep(~ length(list.files(.x,
+    purrr::discard(~ str_detect(basename(.x), regex("ap_data", ignore_case = TRUE))) |> 
+    purrr::keep(~ length(list.files(.x,
       pattern = "\\.(csv|xlsx|txt|sas7bdat)$",
       ignore.case = TRUE)) > 0) |>
     basename() |>
@@ -28,18 +28,18 @@
     make.unique(sep = "_")
   
   # set up parallel processing
-  plan(multisession)
-  registerDoFuture()
+  future::plan(multisession)
+  doFuture::registerDoFuture()
 
   # load exposure data in parallel
   system.time({
     list.dirs(here("data", "exposure", "AP_DATA"), recursive = TRUE) |> 
-    discard(~ str_detect(basename(.x), regex("ap_data", ignore_case = TRUE))) |> 
-    keep(~ length(list.files(.x,
+    purrr::discard(~ str_detect(basename(.x), regex("ap_data", ignore_case = TRUE))) |> 
+    purrr::keep(~ length(list.files(.x,
       pattern = "\\.(csv|xlsx|txt|sas7bdat)$",
       ignore.case = TRUE)) > 0) |>
-    future_map(sdir_merge, .progress = TRUE) |>
-    set_names(exp_data_names) |>
+    furrr::future_map(sdir_merge, .progress = TRUE) |>
+    purrr::set_names(exp_data_names) |>
     list2env(.GlobalEnv)
   })
 
@@ -49,16 +49,18 @@
       full.names = TRUE, recursive = TRUE) |>
     (\(files) {
       files |>
-        str_extract("[^/]+$") |>         # extract file name from full path
-        str_remove("\\.[^.]+$") |>       # remove file extension
-        str_to_lower()                   # convert to lower case
+        stringr::str_extract("[^/]+$") |>         # extract file name from full path
+        stringr::str_remove("\\.[^.]+$") |>       # remove file extension
+        stringr::str_to_lower()                   # convert to lower case
     })()
 
   # load salsa data
   list.dirs(here("data", "salsa"),recursive = FALSE) |> 
     list.files("\\.(csv|xlsx|txt|sas7bdat)$", full.names = TRUE, recursive = T) |> 
-    map(read_file) |> 
-    map(~rename_all(.x, str_to_lower)) |> 
-    set_names(salsa_data_names) |> 
+    purrr::map(read_file) |> 
+    purrr::map(~rename_all(.x, str_to_lower)) |> 
+    purrr::set_names(salsa_data_names) |> 
     list2env(.GlobalEnv)
 }
+
+#--------------------------------End of the code--------------------------------

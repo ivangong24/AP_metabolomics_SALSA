@@ -92,17 +92,13 @@
   )
 }
 
-
 # 3. Create sub folders ---------------------------------------------------
-
 
 # c("scripts", "qmd", "tables", "figures", "data") %>%
 #   map(dir.create)
 
-
 # 4. clean env ------------------------------------------------------------
 
-# mise()
 rm(list = ls())
 
 # 5. create functions -----------------------------------------------------
@@ -129,10 +125,10 @@ quote_all <- function(...) {
 table1 <- function(table) {
   
   table |> 
-    as_hux_table() -> hux
+    gtsummary::as_hux_table() -> hux
   
   table |> 
-    as_flex_table() -> flex
+    gtsummary::as_flex_table() -> flex
   
   return(list(hux=hux, flex=flex))
   
@@ -141,14 +137,14 @@ table1 <- function(table) {
 # read in files in different formats
 read_file <- function(file){
   # read in file based on the file format
-  if(str_detect(file, ".csv$")){
-    read_csv(file)
-  } else if(str_detect(file, ".xlsx$")){
-    read_xlsx(file)
-  } else if(str_detect(file, ".txt$")){
-    read_delim(file)
-  } else if(str_detect(file, ".sas7bdat$")){
-    read_sas(file)
+  if(stringr::str_detect(file, ".csv$")){
+    readr::read_csv(file)
+  } else if(stringr::str_detect(file, ".xlsx$")){
+    readxl::read_xlsx(file)
+  } else if(stringr::str_detect(file, ".txt$")){
+    readr::read_delim(file)
+  } else if(stringr::str_detect(file, ".sas7bdat$")){
+    haven::read_sas(file)
   } else {
     stop("The file is not in the correct format")
   }
@@ -170,8 +166,19 @@ sdir_merge <- function(sdir) {
 
   # read, then bind
   files |> 
-    map(read_file) |> 
-    map(~rename_all(.x, str_to_lower)) |>    # standardize column names to lower case
-    list_rbind() |>                          # fast row-bind (dplyr >= 1.1.0)
-    mutate(.source_dir = basename(sdir))      # optional: keep source info
+    purrr::map(read_file) |> 
+    purrr::map(~rename_all(.x, str_to_lower)) |>    # standardize column names to lower case
+    purrr::list_rbind() |>                          # fast row-bind (dplyr >= 1.1.0)
+    dplyr::mutate(.source_dir = basename(sdir))      # optional: keep source info
 }
+
+# winsorize function
+extreme_remove_percentile_win <- function(x) {
+  Q = quantile(x, c(0.01, 0.99), na.rm = TRUE)
+  x = dplyr::case_when(
+    # x < Q[1] ~ Q[1],
+    x > Q[2] ~ Q[2],
+    TRUE ~ x)
+}
+
+#--------------------------------End of the code--------------------------------
