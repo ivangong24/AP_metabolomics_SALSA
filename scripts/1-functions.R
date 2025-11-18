@@ -83,6 +83,7 @@
     "lme4",           #linear mixed-effects model: lmer()
     "limma",          #linear models for microarray data: lmFit() 
     "nlme",           #linear and nonlinear mixed effects:
+    "survival",       #survival analysis: Surv(), coxph()
     "WGCNA",          #weighted correlation network analysis: GOenrichmentAnalysis()
     "mixOmics",       #block.plsda(),
     "MetaboAnalystR", # pathway analysis: PerformPSEA()
