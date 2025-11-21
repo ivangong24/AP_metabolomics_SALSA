@@ -19,6 +19,7 @@
 salsa_clean <- salsa_data_04212016 |> 
   dplyr::select(rand_id, bl_date, enrollment, blage, birth_date, gender, ageatcind, ageatdem,
   ses3, cind, demcind, contains("smoke")) |> 
+  # dplyr::filter()
   # check all variables contains "smoke", if any of them is not NA, then classify as "ever smoker"
   dplyr::mutate(smoking_status = if_else(
     rowSums(across(contains("smoke"), ~ !is.na(.x))) > 0,
@@ -35,7 +36,11 @@ salsa_clean <- salsa_data_04212016 |>
   ) |>
   # impoute missing data using mice, method = predictive mean matching (pmm)
   mice::mice(m = 5, maxit = 50, method = "pmm", seed = 42) |> 
-  mice::complete(1)
+  mice::complete(1) |> 
+  dplyr::mutate(timediff_cind = ageatcind - blage,
+    timediff_demcind = ageatdem - blage
+    # index_cind = 
+  )
 
 ## clean air toxicants exposure data
 
@@ -103,8 +108,7 @@ salsa_clean <- salsa_data_04212016 |>
     dplyr::mutate(baseline_year = lubridate::year(bl_date),
                   lag = lag_yrs) |>
     dplyr::filter(
-      year >= baseline_year - lag,
-      year <= baseline_year - 1
+      year <= baseline_year - lag
       )    
     }) |> 
     purrr::list_rbind() |> 

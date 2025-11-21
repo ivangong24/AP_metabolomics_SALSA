@@ -34,13 +34,14 @@
   # load exposure data in parallel
   system.time({
     list.dirs(here("data", "exposure", "AP_DATA"), recursive = TRUE) |> 
-    purrr::discard(~ str_detect(basename(.x), regex("ap_data", ignore_case = TRUE))) |> 
-    purrr::keep(~ length(list.files(.x,
-      pattern = "\\.(csv|xlsx|txt|sas7bdat)$",
-      ignore.case = TRUE)) > 0) |>
-    furrr::future_map(sdir_merge, .progress = TRUE) |>
-    purrr::set_names(exp_data_names) |>
-    list2env(.GlobalEnv)
+      purrr::discard(~ str_detect(basename(.x), 
+        regex("ap_data", ignore_case = TRUE))) |> 
+      purrr::keep(~ length(list.files(.x,
+        pattern = "\\.(csv|xlsx|txt|sas7bdat)$",
+        ignore.case = TRUE)) > 0) |>
+      furrr::future_map(sdir_merge, .progress = TRUE) |>
+      purrr::set_names(exp_data_names) |>
+      list2env(.GlobalEnv)
   })
 
   # set salsa data names
@@ -61,6 +62,62 @@
     purrr::map(~rename_all(.x, str_to_lower)) |> 
     purrr::set_names(salsa_data_names) |> 
     list2env(.GlobalEnv)
+
+  # set link datanames
+  link_data_names <- list.dirs(here("data", "links"), recursive = TRUE) |>
+    list.files(pattern = "\\.(csv|txt)$", 
+      full.names = TRUE, recursive = TRUE) |>
+    (\(files) {
+      files |>
+        stringr::str_extract("[^/]+$") |>         # extract file name from full path
+        stringr::str_remove("\\.[^.]+$") |>       # remove file extension
+        stringr::str_to_lower()                   # convert to lower case
+    })()
+  
+  # load link data
+  list.dirs(here("data", "links"),recursive = TRUE) |> 
+    list.files("\\.(csv|txt)$", full.names = TRUE, recursive = T) |> 
+    purrr::map(read_file) |> 
+    purrr::map(~rename_all(.x, str_to_lower)) |> 
+    purrr::set_names(link_data_names) |> 
+    list2env(.GlobalEnv)
+
+
+  # set metabolomics data names
+  metabolomics_data_names <- list.dirs(here("data", "metabolomics"), recursive = FALSE) |> 
+    # purrr::discard(~ str_detect(.x, regex("processed", ignore_case = TRUE))) |> 
+    purrr::map(function(dir){
+      dir |> 
+        list.files(pattern = "\\.(csv|txt|Rdata)$", 
+          full.names = TRUE, recursive = TRUE) |>
+        (\(files) {
+          files |>
+          stringr::str_extract("[^/]+$") |>         # extract file name from full path
+          stringr::str_remove("\\.[^.]+$") |>       # remove file extension
+          stringr::str_to_lower()                   # convert to lower case
+        })()
+    })
+
+
+  # load raw metabolomics data
+  list(
+    list.dirs(here::here("data", "metabolomics"),recursive = FALSE),
+    metabolomics_data_names,
+    list.dirs(here::here("data", "metabolomics"),recursive = FALSE) |> 
+      basename()
+  ) |> 
+    purrr::pmap(function(dir, dataname, dirname){
+      dir |> 
+        list.files("\\.(csv|txt|Rdata)$", full.names = TRUE, recursive = T) |> 
+        purrr::map(read_file) |>
+        # purrr::map(as.data.frame) |> 
+        purrr::map(~rename_all(.x, str_to_lower)) |>
+        purrr::set_names(
+          str_c(dataname, dirname, sep = "_")
+        ) |> 
+        list2env(.GlobalEnv)
+    })
+  
 }
 
 #--------------------------------End of the code--------------------------------

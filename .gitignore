@@ -50,3 +50,6 @@ rsconnect/
 
 # data folder
 data/
+
+# archive folder
+archive/

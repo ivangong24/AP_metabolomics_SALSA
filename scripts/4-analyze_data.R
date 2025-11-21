@@ -79,7 +79,7 @@
 
 
   # fit Cox model for demcind
-  library(survival)
+  # library(survival)
 
   list(
     quote_all(cind, demcind),
@@ -103,6 +103,8 @@
       }) |> 
     purrr::set_names(c("cox_cind", "cox_demcind")) |>
     list2env(.GlobalEnv)
+
+  options(tibble.print_max = 50) 
 
   list(cox_cind, cox_demcind) |> 
     purrr::map(function(models){

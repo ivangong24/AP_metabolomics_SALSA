@@ -136,19 +136,54 @@ table1 <- function(table) {
 }
 
 # read in files in different formats
-read_file <- function(file){
-  # read in file based on the file format
-  if(stringr::str_detect(file, ".csv$")){
-    readr::read_csv(file)
-  } else if(stringr::str_detect(file, ".xlsx$")){
-    readxl::read_xlsx(file)
-  } else if(stringr::str_detect(file, ".txt$")){
-    readr::read_delim(file)
-  } else if(stringr::str_detect(file, ".sas7bdat$")){
-    haven::read_sas(file)
-  } else {
-    stop("The file is not in the correct format")
-  }
+read_file <- function(file) {
+
+  # get lowercase file extension
+  ext <- tolower(tools::file_ext(file))
+
+  switch(ext,
+         
+    # CSV
+    csv   = readr::read_csv(file),
+    
+    # Excel
+    xlsx  = readxl::read_xlsx(file),
+    
+    # TXT (tab or general delimited)
+    txt   = readr::read_delim(file),
+    
+    # SAS
+    sas7bdat = haven::read_sas(file),
+
+    # Stata
+    dta = haven::read_dta(file),
+
+    # R serialized objects
+    rds = readr::read_rds(file),
+    
+    # RData (assume it contains exactly one data.frame/tibble)
+    rdata = {
+      env  <- new.env()
+      load(file, envir = env)
+      objs <- as.list(env)
+
+      objs_df <- objs |> 
+        map(as.data.frame)
+
+      if (length(objs_df) == 1 && inherits(objs_df[[1]], c("data.frame", "tbl_df", "matrix"))) {
+        objs_df[[1]]
+      } else {
+        stop(
+          "RData file `", file, "` does not contain exactly one data.frame/tibble/matrix.\n",
+          "It contains: ", paste(names(objs_df), collapse = ", "), ".\n",
+          "Please load and handle this file manually."
+        )
+      }
+    },
+
+    # default if no match
+    stop("Unsupported file format: ", ext)
+  )
 }
 
 # Merge all files within a single subdirectory
