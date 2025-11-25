@@ -7,7 +7,7 @@
 ##
 ## Date Created: 2025-11-12
 ##
-## Date Modified: 2025-11-12
+## Date Modified: 2025-11-24
 ##
 ## Copyright (c) Yufan Gong, 2025
 ## Email: ivangong@ucla.edu
@@ -17,7 +17,7 @@
 # 1. Load the data --------------------------------------------------
 
 {
-  # set exposure data names
+  # set AP exposure data names
   exp_data_names <- list.dirs(here("data", "exposure", "AP_DATA"), recursive = TRUE) |> 
     purrr::discard(~ str_detect(basename(.x), regex("ap_data", ignore_case = TRUE))) |> 
     purrr::keep(~ length(list.files(.x,
@@ -31,7 +31,7 @@
   future::plan(multisession)
   doFuture::registerDoFuture()
 
-  # load exposure data in parallel
+  # load AP exposure data in parallel
   system.time({
     list.dirs(here("data", "exposure", "AP_DATA"), recursive = TRUE) |> 
       purrr::discard(~ str_detect(basename(.x), 
@@ -43,6 +43,25 @@
       purrr::set_names(exp_data_names) |>
       list2env(.GlobalEnv)
   })
+
+  # set up caline data names
+  caline_data_names <- list.dirs(here("data", "caline"), recursive = TRUE) |> 
+    list.files(pattern = "\\.(csv|xlsx|sas7bdat)$", 
+      full.names = TRUE, recursive = FALSE) |> 
+    (\(files) {
+      files |>
+        stringr::str_extract("[^/]+$") |>         # extract file name from full path
+        stringr::str_remove("\\.[^.]+$") |>       # remove file extension
+        stringr::str_to_lower()                   # convert to lower case
+    })()
+
+  # load caline data
+  list.dirs(here("data", "caline"), recursive = TRUE) |> 
+    list.files("\\.(csv|xlsx|sas7bdat)$", full.names = TRUE, recursive = F) |> 
+    purrr::map(read_file) |> 
+    purrr::map(~rename_all(.x, str_to_lower)) |> 
+    purrr::set_names(caline_data_names) |> 
+    list2env(.GlobalEnv)
 
   # set salsa data names
   salsa_data_names <- list.dirs(here("data", "salsa"), recursive = FALSE) |>

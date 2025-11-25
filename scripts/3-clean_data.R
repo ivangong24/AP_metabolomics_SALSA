@@ -17,6 +17,20 @@
 ## clean the original salsa data
 
 salsa_clean <- salsa_data_04212016 |> 
+  # removed people without baseline visit, n = 3
+  dplyr::filter(!is.na(bl_date)) |> 
+  # removed people with CIND at baseline, n = 115
+  dplyr::filter(
+    !(demcind == 1 & dcyear == 0) 
+  # | (demcind == 1 & blage >= ageatcind) 
+  # | (demcind == 1 & blage >= ageatdem)
+  ) |> 
+  # removed no-follow-ups & survival time = 0, n = 57
+  dplyr::filter(!(dplyr::if_all(av1_date:fv6_date, is.na) & dcst == 0)) |> 
+  # n = 1614 for now, need to further restrict to people who provided all necessary information (n= 53)
+  # but not sure what variables are needed yet
+  # this final number to this step may change after checking the variables needed
+  ############################################################################################
   dplyr::select(rand_id, bl_date, enrollment, blage, birth_date, gender, ageatcind, ageatdem,
   ses3, cind, demcind, contains("smoke")) |> 
   # dplyr::filter()
@@ -128,3 +142,96 @@ salsa_clean <- salsa_data_04212016 |>
 
 }
 
+## get NOx IQR data
+
+### first look at the cleaned caline nox data from Dr. Paul, i.e., salsa2_ap
+
+# the nox_iqr variable is basically the rescaled version of nox (i.e., nox divided by IQR(nox)), with subtle difference
+# I guess the we should use the IQR of nox in the total study population (n = 1789) to serve as the denominator for rescaling
+# but what exactly is the nox variable here? 
+# is it the average nox exposure during the enrollment year (https://pmc.ncbi.nlm.nih.gov/articles/PMC7591265/)? or some other period?
+# we need to verify this with Dr. Paul
+
+test_nox <- salsa2_ap |> 
+  dplyr::select(rand_id, nox, nox_iqr) |> 
+  dplyr::mutate(
+    nox_iqr_check = nox / IQR(nox, na.rm = TRUE)
+  )
+
+### check the 2002 caline nox data
+
+caline_nox_2002 <- caline_2002 |> 
+  # merge with salsa_geocode_unique_ca to get rand_id
+  dplyr::left_join(salsa_geocode_unique_ca |> 
+    dplyr::select(rand_id, unique_id),
+    by = "unique_id"
+  ) |>
+  dplyr::group_by(rand_id) |>
+  dplyr::summarise(
+    nox_2002_avg = mean(nox, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  dplyr::mutate(
+    nox_iqr_check_2002 = nox_2002_avg / IQR(nox_2002_avg, na.rm = TRUE)
+  ) 
+
+# obviously, the nox_iqr_check_2002 is different from the nox_iqr in salsa2_ap
+# and it doesn't make sense to use only 2002 data to calculate the IQR for the entire study period
+
+
+
+
+
+
+caline_nox_long <- salsa2_ap |> 
+  dplyr::select(rand_id, unique_id, starts_with("nox_19"), starts_with("nox_20")) |> 
+  # make the dataset long format
+  tidyr::pivot_longer(
+    cols = matches("^nox_\\d{4}_\\d{1,2}$"),
+    names_to = c("year", "month"),
+    names_pattern = "nox_(\\d{4})_(\\d{1,2})",
+    values_to = "value") |> 
+  dplyr::left_join(
+    salsa_data_04212016 |> 
+      dplyr::select(rand_id, enrollment),
+    by = "rand_id"
+  ) |> 
+  dplyr::mutate(
+    enroll_year = lubridate::year(enrollment),
+    enroll_month = lubridate::month(enrollment),
+    year = as.numeric(year),
+    month = as.numeric(month)
+  ) |> 
+  dplyr::group_by(rand_id, unique_id) |> 
+  dplyr::filter(
+    year == enroll_year,
+    month <= enroll_month
+  ) |> 
+  dplyr::ungroup()
+
+
+
+caline_nox_yearly <- caline_nox_long %>%
+  dplyr::group_by(rand_id, unique_id) %>%
+  dplyr::summarise(
+    yearly_avg = mean(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+nox_iqr_value <- IQR(caline_nox_yearly$yearly_avg, na.rm = TRUE)
+nox_median_value <- median(caline_nox_yearly$yearly_avg, na.rm = TRUE)
+
+caline_nox_iqr <- caline_nox_yearly %>%
+  mutate(
+    monthly_std = yearly_avg/nox_iqr_value
+  ) |> 
+  # group_by(rand_id, unique_id) %>%
+  # summarise(
+  #   monthly_avg_std = mean(monthly_std, na.rm = TRUE),
+  #   .groups = "drop"
+  # ) |> 
+  left_join(
+    salsa2_ap |> 
+      dplyr::select(rand_id, unique_id, nox_iqr),
+        by = c("rand_id", "unique_id")
+  )
