@@ -126,3 +126,10 @@
     )
 
 }
+
+# replication of previous findings from Dr. Paul's paper: https://pmc.ncbi.nlm.nih.gov/articles/PMC7591265/
+
+{
+  # fit Cox model for demcind with NOx_iqr
+  
+}

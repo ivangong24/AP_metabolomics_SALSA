@@ -15,46 +15,48 @@
 ## ---------------------------
 
 ## clean the original salsa data
+{
+  salsa_clean <- salsa_data_04212016 |> 
+    # removed people without baseline visit, n = 3
+    dplyr::filter(!is.na(bl_date)) |> 
+    # removed people with CIND at baseline, n = 115
+    dplyr::filter(
+      !(demcind == 1 & dcyear == 0) 
+    # | (demcind == 1 & blage >= ageatcind) 
+    # | (demcind == 1 & blage >= ageatdem)
+    ) |> 
+    # removed no-follow-ups & survival time = 0, n = 57
+    dplyr::filter(!(dplyr::if_all(av1_date:fv6_date, is.na) & dcst == 0)) |> 
+    # n = 1614 for now, need to further restrict to people who provided all necessary information (n= 53)
+    # but not sure what variables are needed yet
+    # this final number to this step may change after checking the variables needed
+    ############################################################################################
+    dplyr::select(rand_id, bl_date, enrollment, blage, birth_date, gender, ageatcind, ageatdem,
+    ses3, cind, demcind, contains("smoke")) |> 
+    # dplyr::filter()
+    # check all variables contains "smoke", if any of them is not NA, then classify as "ever smoker"
+    dplyr::mutate(smoking_status = if_else(
+      rowSums(across(contains("smoke"), ~ !is.na(.x))) > 0,
+      "ever smoker",
+      "never smoker"
+    )) |> 
+    dplyr::rename(
+      edu_year = ses3
+    ) |> 
+    dplyr::select(-contains("smoke")) |> 
+    dplyr::mutate(
+      bl_date = if_else(is.na(bl_date), enrollment, bl_date),
+      bl_date = lubridate::ymd(bl_date)
+    ) |>
+    # impoute missing data using mice, method = predictive mean matching (pmm)
+    mice::mice(m = 5, maxit = 50, method = "pmm", seed = 42) |> 
+    mice::complete(1) |> 
+    dplyr::mutate(timediff_cind = ageatcind - blage,
+      timediff_demcind = ageatdem - blage
+      # index_cind = 
+    )
+}
 
-salsa_clean <- salsa_data_04212016 |> 
-  # removed people without baseline visit, n = 3
-  dplyr::filter(!is.na(bl_date)) |> 
-  # removed people with CIND at baseline, n = 115
-  dplyr::filter(
-    !(demcind == 1 & dcyear == 0) 
-  # | (demcind == 1 & blage >= ageatcind) 
-  # | (demcind == 1 & blage >= ageatdem)
-  ) |> 
-  # removed no-follow-ups & survival time = 0, n = 57
-  dplyr::filter(!(dplyr::if_all(av1_date:fv6_date, is.na) & dcst == 0)) |> 
-  # n = 1614 for now, need to further restrict to people who provided all necessary information (n= 53)
-  # but not sure what variables are needed yet
-  # this final number to this step may change after checking the variables needed
-  ############################################################################################
-  dplyr::select(rand_id, bl_date, enrollment, blage, birth_date, gender, ageatcind, ageatdem,
-  ses3, cind, demcind, contains("smoke")) |> 
-  # dplyr::filter()
-  # check all variables contains "smoke", if any of them is not NA, then classify as "ever smoker"
-  dplyr::mutate(smoking_status = if_else(
-    rowSums(across(contains("smoke"), ~ !is.na(.x))) > 0,
-    "ever smoker",
-    "never smoker"
-  )) |> 
-  dplyr::rename(
-    edu_year = ses3
-  ) |> 
-  dplyr::select(-contains("smoke")) |> 
-  dplyr::mutate(
-    bl_date = if_else(is.na(bl_date), enrollment, bl_date),
-    bl_date = lubridate::ymd(bl_date)
-  ) |>
-  # impoute missing data using mice, method = predictive mean matching (pmm)
-  mice::mice(m = 5, maxit = 50, method = "pmm", seed = 42) |> 
-  mice::complete(1) |> 
-  dplyr::mutate(timediff_cind = ageatcind - blage,
-    timediff_demcind = ageatdem - blage
-    # index_cind = 
-  )
 
 ## clean air toxicants exposure data
 
@@ -155,8 +157,10 @@ salsa_clean <- salsa_data_04212016 |>
 test_nox <- salsa2_ap |> 
   dplyr::select(rand_id, nox, nox_iqr) |> 
   dplyr::mutate(
-    nox_iqr_check = nox / IQR(nox, na.rm = TRUE)
+    nox_iqr_check = nox / IQR(nox, na.rm = TRUE),
+    nox_iqr_check_origin = nox / 2.31 # pre-calculated IQR value from Dr. Paul's paper
   )
+
 
 ### check the 2002 caline nox data
 
@@ -177,10 +181,6 @@ caline_nox_2002 <- caline_2002 |>
 
 # obviously, the nox_iqr_check_2002 is different from the nox_iqr in salsa2_ap
 # and it doesn't make sense to use only 2002 data to calculate the IQR for the entire study period
-
-
-
-
 
 
 caline_nox_long <- salsa2_ap |> 
@@ -222,7 +222,7 @@ nox_iqr_value <- IQR(caline_nox_yearly$yearly_avg, na.rm = TRUE)
 nox_median_value <- median(caline_nox_yearly$yearly_avg, na.rm = TRUE)
 
 caline_nox_iqr <- caline_nox_yearly %>%
-  mutate(
+  dplyr::mutate(
     monthly_std = yearly_avg/nox_iqr_value
   ) |> 
   # group_by(rand_id, unique_id) %>%
@@ -230,7 +230,7 @@ caline_nox_iqr <- caline_nox_yearly %>%
   #   monthly_avg_std = mean(monthly_std, na.rm = TRUE),
   #   .groups = "drop"
   # ) |> 
-  left_join(
+  dplyr::left_join(
     salsa2_ap |> 
       dplyr::select(rand_id, unique_id, nox_iqr),
         by = c("rand_id", "unique_id")
