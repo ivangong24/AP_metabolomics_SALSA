@@ -32,18 +32,18 @@
     # this final number to this step may change after checking the variables needed
     ############################################################################################
     dplyr::select(rand_id, bl_date, enrollment, blage, birth_date, gender, ageatcind, ageatdem,
-    ses3, cind, demcind, contains("smoke")) |> 
+    ses3, cind, demcind, mh62) |> 
     # dplyr::filter()
     # check all variables contains "smoke", if any of them is not NA, then classify as "ever smoker"
-    dplyr::mutate(smoking_status = if_else(
-      rowSums(across(contains("smoke"), ~ !is.na(.x))) > 0,
-      "ever smoker",
-      "never smoker"
+    dplyr::mutate(smoking_status = case_when(
+      mh62 == 1 ~ "Never smoker",
+      mh62 == 2 ~ "Former smoker",
+      mh62 == 3 ~ "Current smoker",
+      TRUE ~ NA_character_
     )) |> 
     dplyr::rename(
       edu_year = ses3
     ) |> 
-    dplyr::select(-contains("smoke")) |> 
     dplyr::mutate(
       bl_date = if_else(is.na(bl_date), enrollment, bl_date),
       bl_date = lubridate::ymd(bl_date)
