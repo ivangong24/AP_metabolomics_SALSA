@@ -136,8 +136,10 @@
   # primary language spoken(language), occupation for most of the participant’s life(ses7_occgrp)
   # smoking status(mh62), baseline cognitive function(bl_mse3_new)
   salsa_clean_nox <- salsa2_ap |> 
-    dplyr::select(rand_id, nox_iqr, nox_cal_q3, nox, demcind, dcst, blage, gender, ses3,
-    language, ses7, mh62, bl_mse3_new, smoke_cigarettes_30day, age_start_smoke) |> 
+    dplyr::select(rand_id, nox_iqr, nox_cal_q3, nox, demcind, 
+                  dcst, blage, gender, ses3,
+    language, ses7, mh62, bl_mse3_new, smoke_cigarettes_30day, 
+    age_start_smoke) |> 
     dplyr::mutate(
       smoke_status = case_when(
         smoke_cigarettes_30day == 1 ~ 3,
@@ -180,7 +182,8 @@
     mutate(language = fct_rev(language),
            gender = fct_rev(gender))
   
-  vars_to_keep <- quote_all(demcind, blage, gender, edu_year, language, bl_mse3_new, smoke_status, nox)
+  vars_to_keep <- quote_all(demcind, blage, gender, edu_year, 
+                            language, bl_mse3_new, smoke_status, nox)
   
   salsa_clean_nox |> 
     select(all_of(vars_to_keep)) |> 
@@ -201,7 +204,8 @@
 
   # fit Cox model for demcind with NOx_iqr
   cox_nox_model <- survival::coxph(
-    formula = Surv(dcst, demcind) ~ nox_iqr + blage + gender + edu_year + language + bl_mse3_new,
+    formula = Surv(dcst, demcind) ~ nox_iqr + blage + gender 
+    + edu_year + language + bl_mse3_new,
     id      = rand_id,
     data    = salsa_clean_nox
   )

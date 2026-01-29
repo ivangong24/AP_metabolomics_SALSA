@@ -18,8 +18,10 @@
 
 {
   # set AP exposure data names
-  exp_data_names <- list.dirs(here("data", "exposure", "AP_DATA"), recursive = TRUE) |> 
-    purrr::discard(~ str_detect(basename(.x), regex("ap_data", ignore_case = TRUE))) |> 
+  exp_data_names <- list.dirs(here("data", "exposure", "AP_DATA"), 
+                              recursive = TRUE) |> 
+    purrr::discard(~ str_detect(basename(.x), 
+                                regex("ap_data", ignore_case = TRUE))) |> 
     purrr::keep(~ length(list.files(.x,
       pattern = "\\.(csv|xlsx|txt|sas7bdat)$",
       ignore.case = TRUE)) > 0) |>
@@ -76,7 +78,8 @@
 
   # load salsa data
   list.dirs(here("data", "salsa"),recursive = FALSE) |> 
-    list.files("\\.(csv|xlsx|txt|sas7bdat)$", full.names = TRUE, recursive = T) |> 
+    list.files("\\.(csv|xlsx|txt|sas7bdat)$",
+               full.names = TRUE, recursive = T) |> 
     purrr::map(read_file) |> 
     purrr::map(~rename_all(.x, str_to_lower)) |> 
     purrr::set_names(salsa_data_names) |> 
@@ -104,7 +107,8 @@
 
 
   # set metabolomics data names
-  metabolomics_data_names <- list.dirs(here("data", "metabolomics"), recursive = FALSE) |> 
+  metabolomics_data_names <- list.dirs(here("data", "metabolomics"), 
+                                       recursive = FALSE) |> 
     # purrr::discard(~ str_detect(.x, regex("processed", ignore_case = TRUE))) |> 
     purrr::map(function(dir){
       dir |> 
