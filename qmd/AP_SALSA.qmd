@@ -1,0 +1,43 @@
+---
+title: "Air toxicants and Metabolomic profile among SALSA participants"
+author: "Yufan Gong"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format:
+  html:
+    theme: cosmo
+    number-sections: true
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    code-fold: true
+    df_print: paged
+    grid:
+      body-width: 1100px
+knitr:
+  opts_chunk: 
+    cache: false    
+    echo: true
+    fig.align: 'center'
+    fig.width: 10
+    fig.height: 8
+    message: FALSE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message=FALSE)
+```
+
+# Introduction
+
+# Method
+
+## Study population
+
+The Sacramento Area Latino Study on Aging (SALSA) is a population-based, prospective study of foreign and US-born Latino respondents living in the Sacramento Valley region of Northern California. The SALSA study is tracking the incidence of physical and cognitive impairment as well as dementia and cardiovascular diseases in elderly Latinos in the Sacramento region. 
+
+### Overview dashboard
+
+
+## Air toxicants exposure assessment
+
+
