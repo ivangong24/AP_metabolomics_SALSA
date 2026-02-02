@@ -33,14 +33,7 @@
     ############################################################################################
     dplyr::select(rand_id, bl_date, enrollment, blage, birth_date, gender, ageatcind, ageatdem,
     ses3, cind, demcind, mh62) |> 
-    # dplyr::filter()
     # check all variables contains "smoke", if any of them is not NA, then classify as "ever smoker"
-    dplyr::mutate(smoking_status = case_when(
-      mh62 == 1 ~ "Never smoker",
-      mh62 == 2 ~ "Former smoker",
-      mh62 == 3 ~ "Current smoker",
-      TRUE ~ NA_character_
-    )) |> 
     dplyr::rename(
       edu_year = ses3
     ) |> 
@@ -48,13 +41,34 @@
       bl_date = if_else(is.na(bl_date), enrollment, bl_date),
       bl_date = lubridate::ymd(bl_date)
     ) |>
-    # impoute missing data using mice, method = predictive mean matching (pmm)
+    # impute missing data using mice, method = predictive mean matching (pmm)
     mice::mice(m = 5, maxit = 50, method = "pmm", seed = 42) |> 
     mice::complete(1) |> 
-    dplyr::mutate(timediff_cind = ageatcind - blage,
-      timediff_demcind = ageatdem - blage
-      # index_cind = 
-    )
+    # dplyr::mutate(timediff_cind = ageatcind - blage,
+    #   timediff_demcind = ageatdem - blage
+    #   # index_cind = 
+    # ) |> 
+    set_variable_labels(
+      mh62 = "Smoking status",
+      edu_year = "Years of education",
+      gender = "Gender",
+      blage = "Baseline age",
+      ageatcind = "Age at CIND diagnosis",
+      ageatdem = "Age at dementia diagnosis",
+      cind = "Cognitive impairment no dementia (CIND)",
+      demcind = "Dementia or CIND",
+      enrollment = "Enrollment date"
+    ) |>
+    set_value_labels(
+      gender = c("Male" = 1, "Female" = 2),
+      mh62 = c("Never smoker" = 1, "Former smoker" = 2, "Current smoker" = 3),
+      demcind = c("No Dementia/CIND" = 0, "Dementia/CIND" = 1),
+      cind = c("No CIND" = 0, "CIND" = 1)
+    ) |>
+    modify_if(is.labelled, to_factor)
+  
+  skimr::skim(salsa_clean)
+  
 }
 
 
@@ -65,9 +79,10 @@
   col_common <- quote_all(rand_id, date, .source_dir)
 
   air_toxicants_avg_ztrans <- ls(envir = .GlobalEnv, all.names = TRUE) |> 
-    purrr::keep(~ str_detect(.x, regex(str_c(exp_data_names, collapse = "|"), ignore_case = TRUE))) |> 
-    purrr::discard(~ str_detect(.x, regex(str_c("no2|o3|pm2_5"),
-                                 ignore_case = TRUE))) |> 
+    purrr::keep(~ str_detect(.x, regex(str_c(exp_data_names, collapse = "|"), 
+                                       ignore_case = TRUE))) |> 
+    # purrr::discard(~ str_detect(.x, regex(str_c("no2|o3|pm2_5"),
+    #                              ignore_case = TRUE))) |> 
     purrr::keep(~ exists(.x, envir = .GlobalEnv, inherits = TRUE)) |> 
     mget(envir = .GlobalEnv, inherits = TRUE) |> 
     (\(x) x[order(names(x))])() |> 
@@ -90,7 +105,8 @@
       names_prefix = "exp_"
     ) |> 
     dplyr::rename_all(str_to_lower) |> 
-    dplyr::mutate(across(starts_with("exp_"), ~ scale(.x, center = TRUE)))
+    dplyr::mutate(across(starts_with("exp_"), 
+                         ~ scale(.x, center = TRUE) %>% as.vector()))
 
 }
 
@@ -101,7 +117,8 @@
   air_toxicants_yearly <- lag_windows |> 
     purrr::map(function(lag_yrs){
       ls(envir = .GlobalEnv, all.names = TRUE) |> 
-    purrr::keep(~ str_detect(.x, regex(str_c(exp_data_names, collapse = "|"), ignore_case = TRUE))) |> 
+    purrr::keep(~ str_detect(.x, regex(str_c(exp_data_names, collapse = "|"), 
+                                       ignore_case = TRUE))) |> 
     purrr::discard(~ str_detect(.x, regex(str_c("no2|o3|pm2_5"),
                                  ignore_case = TRUE))) |> 
     purrr::keep(~ exists(.x, envir = .GlobalEnv, inherits = TRUE)) |> 
@@ -139,9 +156,9 @@
       names_from  = c(toxicant, lag),
       values_from = exp_mean
     ) |> 
-    dplyr::mutate(across(-rand_id, ~ scale(.x, center = TRUE))) |> 
-    dplyr::rename_all(str_to_lower)
-
+    dplyr::rename_all(str_to_lower) |> 
+    dplyr::mutate(across(-rand_id,
+                         ~ scale(.x, center = TRUE) %>% as.vector())) 
 }
 
 ## get NOx IQR data
@@ -161,6 +178,9 @@ test_nox <- salsa2_ap |>
     nox_iqr_check_origin = nox / 2.31 # pre-calculated IQR value from Dr. Paul's paper
   )
 
+test <- caline1789_nox_1998_2002 |> 
+  mutate(nox_avg = rowMeans(across(nox_1998:nox_2002), na.rm = TRUE))
+IQR(test$nox_avg, na.rm = TRUE)
 
 ### check the 2002 caline nox data
 
@@ -170,6 +190,7 @@ caline_nox_2002 <- caline_2002 |>
     dplyr::select(rand_id, unique_id),
     by = "unique_id"
   ) |>
+  # filter(rand_id %in% salsa2_ap$rand_id) |> 
   dplyr::group_by(rand_id) |>
   dplyr::summarise(
     nox_2002_avg = mean(nox, na.rm = TRUE),
@@ -182,12 +203,13 @@ caline_nox_2002 <- caline_2002 |>
 # obviously, the nox_iqr_check_2002 is different from the nox_iqr in salsa2_ap
 # and it doesn't make sense to use only 2002 data to calculate the IQR for the entire study period
 
-
-caline_nox_long <- salsa2_ap |> 
-  dplyr::select(rand_id, unique_id, starts_with("nox_19"), starts_with("nox_20")) |> 
+### calculate the yearly average nox exposure from caline data up to enrollment date
+caline_nox_long <- salsa2_ap |>
+  dplyr::select(rand_id, unique_id, starts_with("nox_19"),
+                starts_with("nox_20")) |>
   # make the dataset long format
   tidyr::pivot_longer(
-    cols = matches("^nox_\\d{4}_\\d{1,2}$"),
+    cols = starts_with("nox_"),
     names_to = c("year", "month"),
     names_pattern = "nox_(\\d{4})_(\\d{1,2})",
     values_to = "value") |> 
@@ -206,7 +228,7 @@ caline_nox_long <- salsa2_ap |>
   dplyr::filter(
     year == enroll_year,
     month <= enroll_month
-  ) |> 
+  ) |>
   dplyr::ungroup()
 
 
@@ -224,14 +246,121 @@ nox_median_value <- median(caline_nox_yearly$yearly_avg, na.rm = TRUE)
 caline_nox_iqr <- caline_nox_yearly %>%
   dplyr::mutate(
     monthly_std = yearly_avg/nox_iqr_value
-  ) |> 
+  ) |>
   # group_by(rand_id, unique_id) %>%
   # summarise(
   #   monthly_avg_std = mean(monthly_std, na.rm = TRUE),
   #   .groups = "drop"
-  # ) |> 
+  # ) |>
   dplyr::left_join(
-    salsa2_ap |> 
+    salsa2_ap |>
       dplyr::select(rand_id, unique_id, nox_iqr),
         by = c("rand_id", "unique_id")
   )
+
+# Process metabolomic data ------------------------------------------------
+
+## clean the link data
+
+salsa_mappling_list <- ls(envir = .GlobalEnv, all.names = TRUE) %>%
+  keep(~ str_detect(.x, regex("salsa_mapping", ignore_case = TRUE))) %>%
+  discard(~ str_detect(.x, regex("list",ignore_case = TRUE))) %>%
+  keep(~ exists(.x, envir = .GlobalEnv, inherits = TRUE)) %>%
+  mget(envir = .GlobalEnv, inherits = TRUE) %>%
+  (\(x) x[order(names(x))])()
+
+salsa_mappling_list %>% 
+  purrr::map(function(data){
+    data %>% 
+      dplyr::mutate(file.name_new = str_c(file.name, "mzXML", sep = ".")) %>% 
+      dplyr::mutate(file.name_new = str_to_lower(file.name_new))
+  }) %>% 
+  purrr::set_names(names(salsa_mappling_list)) %>%
+  list2env(.,envir = .GlobalEnv)
+
+
+# =============================================================================
+# SECTION: PREPARE FINAL NOx EXPOSURE DATA
+# =============================================================================
+
+## Create final NOx exposure dataset with IQR scaling
+
+nox_exposure_final <- caline_nox_iqr |>
+  dplyr::select(rand_id, yearly_avg, monthly_std) |>
+  dplyr::rename(
+    exp_nox = yearly_avg,
+    exp_nox_iqr = monthly_std
+  ) |>
+  dplyr::distinct(rand_id, .keep_all = TRUE)
+
+
+## Merge NOx with other air toxicants exposure data
+air_toxicants_all <- air_toxicants_avg_ztrans |>
+  dplyr::left_join(nox_exposure_final, by = "rand_id") |>
+  dplyr::mutate(
+    exp_nox_z = scale(exp_nox, center = TRUE)[,1]
+  )
+
+
+# =============================================================================
+# SECTION: CREATE FINAL ANALYSIS DATASET
+# =============================================================================
+
+## Merge SALSA covariates with all exposure data
+
+salsa_data_final <- salsa_clean |>
+  dplyr::mutate(rand_id = as.character(rand_id)) |>
+  dplyr::left_join(
+    air_toxicants_all |>
+      dplyr::mutate(rand_id = as.character(rand_id)),
+    by = "rand_id"
+  )
+
+## Summary of final dataset
+message("\nFinal analysis dataset summary:")
+message(paste0("  Total participants: ", nrow(salsa_data_final)))
+message(paste0("  Participants with air toxicants data: ",
+               sum(!is.na(salsa_data_final$exp_benzene))))
+message(paste0("  Participants with NOx data: ",
+               sum(!is.na(salsa_data_final$exp_nox))))
+
+
+## Create dataset with lagged exposures for Cox models
+
+salsa_data_lagged <- salsa_clean |>
+  dplyr::mutate(rand_id = as.character(rand_id)) |>
+  dplyr::left_join(
+    air_toxicants_yearly |>
+      dplyr::mutate(rand_id = as.character(rand_id)),
+    by = "rand_id"
+  )
+
+
+# =============================================================================
+# SECTION: SAVE CLEANED DATA
+# =============================================================================
+
+## Create output directory
+dir.create(here::here("data", "processed"), showWarnings = FALSE, recursive = TRUE)
+
+## Save cleaned datasets for downstream analysis
+
+save(salsa_clean,
+     file = here::here("data", "processed", "salsa_clean.RData"))
+
+save(air_toxicants_avg_ztrans, air_toxicants_yearly, air_toxicants_all,
+     file = here::here("data", "processed", "air_toxicants_exposure.RData"))
+
+save(nox_exposure_final, caline_nox_iqr,
+     file = here::here("data", "processed", "nox_exposure.RData"))
+
+save(salsa_data_final, salsa_data_lagged,
+     file = here::here("data", "processed", "salsa_final_analysis.RData"))
+
+message("\nCleaned data saved to data/processed/")
+message("  - salsa_clean.RData")
+message("  - air_toxicants_exposure.RData")
+message("  - nox_exposure.RData")
+message("  - salsa_final_analysis.RData")
+
+#--------------------------------End of the code--------------------------------
