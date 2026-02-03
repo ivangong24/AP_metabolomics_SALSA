@@ -34,8 +34,7 @@ library(writexl)
 
 load(here::here("data", "metabolomics", "processed", "combined_residual_c18.RData"))
 load(here::here("data", "metabolomics", "processed", "combined_residual_hilic.RData"))
-load(here::here("data", "metabolomics", "processed", "sample_links.RData"))
-
+load(here::here("data", "links", "processed", "Sample_links.RData"))
 
 # Prepare exposure data for MWAS ---------------------------------------------
 

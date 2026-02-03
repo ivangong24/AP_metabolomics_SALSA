@@ -14,8 +14,8 @@ format:
     grid:
       body-width: 1100px
 knitr:
-  opts_chunk: 
-    cache: false    
+  opts_chunk:
+    cache: false
     echo: true
     fig.align: 'center'
     fig.width: 10
@@ -29,15 +29,349 @@ knitr::opts_chunk$set(warning = FALSE, message=FALSE)
 
 # Introduction
 
-# Method
+Air pollution exposure has been linked to various adverse health outcomes, including cognitive decline and dementia. However, the biological mechanisms underlying these associations remain poorly understood. Metabolomics provides a powerful approach to identify molecular signatures and biological pathways that may mediate the effects of environmental exposures on health.
+
+This study investigates the association between air toxicants exposure and the metabolomic profile among participants of the Sacramento Area Latino Study on Aging (SALSA). We conducted a metabolome-wide association study (MWAS) to identify metabolites associated with exposure to multiple air pollutants, including:
+
+- **Criteria air pollutants**: PM2.5, NO2, NOx, O3
+- **Air toxics**: Benzene, 1,3-Butadiene
+- **Metals**: Chromium, Lead, Nickel, Zinc
+
+# Methods
 
 ## Study population
 
-The Sacramento Area Latino Study on Aging (SALSA) is a population-based, prospective study of foreign and US-born Latino respondents living in the Sacramento Valley region of Northern California. The SALSA study is tracking the incidence of physical and cognitive impairment as well as dementia and cardiovascular diseases in elderly Latinos in the Sacramento region. 
+The Sacramento Area Latino Study on Aging (SALSA) is a population-based, prospective study of foreign and US-born Latino respondents living in the Sacramento Valley region of Northern California. The SALSA study is tracking the incidence of physical and cognitive impairment as well as dementia and cardiovascular diseases in elderly Latinos in the Sacramento region.
 
-### Overview dashboard
+Participants were included in this analysis if they:
 
+- Had a baseline visit date
+- Did not have cognitive impairment no dementia (CIND) at baseline
+- Had at least one follow-up visit or non-zero survival time
+- Had metabolomics data
 
 ## Air toxicants exposure assessment
+
+Air toxicants exposure was estimated using geocoded residential addresses linked to modeled pollutant concentrations. For each participant, we calculated the **5-year average exposure** prior to their baseline enrollment date for each air toxicant.
+
+**Data processing steps:**
+
+1. Linked participant addresses to pollutant concentration data
+3. Calculated 5-year pre-baseline average exposure for each participant
+4. Applied winsorization (top 1%) to remove extreme values (using percentile-based trimming)
+5. Z-transformed all exposure variables (centered and scaled) for comparability across pollutants
+
+The final exposure variables include: benzene, 1,3-butadiene, chromium, lead, nickel, NO2, NOx, O3, PM2.5, and zinc.
+
+## Metabolomics data processing
+
+Untargeted metabolomics profiling was performed using liquid chromatography-mass spectrometry (LC-MS) with two complementary chromatographic methods:
+
+- **C18 (Reverse phase, negative ionization)**: Better for nonpolar and moderately polar metabolites
+- **HILIC (Hydrophilic interaction, positive ionization)**: Better for polar metabolites
+
+**Data processing pipeline:**
+
+**Dr. Paul completed**
+
+1. Raw spectral data were processed and m/z values were calibrated
+2. Features were normalized using median values across technical replicates
+3. Batch effects were corrected using ComBat
+4. Metabolite features were identified using the format `mz_rt_[m/z value]_[retention time]`
+5. Sample linkage was established between metabolomics data and participant IDs
+
+**Yufan completed**
+
+6. **Residualization**: Metabolite abundances were adjusted for covariates to obtain residual values for downstream analysis
+   - Covariates adjusted for: age, sex, education, smoking status
+
+## Statistical analysis
+
+### Metabolome-Wide Association Study (MWAS)
+
+We employed a two-pronged approach to identify metabolites associated with air toxicants exposure:
+
+**1. Linear modeling with limma:**
+
+- Fitted linear models for each metabolite against each exposure variable
+- Applied empirical Bayes moderation to improve variance estimates
+- Adjusted p-values using Benjamini-Hochberg FDR correction
+- Significance threshold: FDR < 0.05
+
+**2. Partial Least Squares (PLS) regression:**
+
+- Fitted PLS models with 3 components for each exposure
+- Extracted Variable Importance in Projection (VIP) scores
+- Metabolites with VIP > 2 were considered important features
+
+**Combined approach:** Metabolites were considered significant if they met either criterion:
+
+- FDR-adjusted p-value < 0.05, OR
+- VIP score > 2 in the first PLS component
+
+# Results
+
+## Study Population Characteristics
+
+```{r load-table1-data, include=FALSE}
+# Load required packages
+library(tidyverse)
+library(gtsummary)
+library(labelled)
+library(here)
+
+# Load the table1 objects if they exist
+table1_file <- here::here("tables", "table1", "table1_objects.RData")
+if (file.exists(table1_file)) {
+  load(table1_file)
+} else {
+  # If not, load raw data and create tables
+  load(here::here("data", "processed", "salsa_clean.RData"))
+  load(here::here("data", "processed", "air_toxicants_exposure.RData"))
+  load(here::here("data", "links", "processed", "Sample_links.RData"))
+
+  # Get participants with metabolomics data
+  participants_c18 <- sample_link_c18 |> pull(rand_id) |> unique()
+  participants_hilic <- sample_link_hilic |> pull(rand_id) |> unique()
+  participants_metabolomics <- union(participants_c18, participants_hilic)
+
+  # Create analysis dataset
+  table1_data <- salsa_clean |>
+    mutate(rand_id = as.character(rand_id)) |>
+    filter(rand_id %in% as.character(participants_metabolomics)) |>
+    left_join(
+      air_toxicants_avg_ztrans |> mutate(rand_id = as.character(rand_id)),
+      by = "rand_id"
+    )
+}
+```
+
+
+### Table 1: By Dementia/CIND Status
+
+```{r table1-by-demcind, echo=FALSE}
+if (exists("tbl1_by_demcind")) {
+  tbl1_by_demcind
+} else {
+  table1_data |>
+    dplyr::select(
+      blage, gender, edu_year, mh62, demcind
+    ) |>
+    labelled::set_variable_labels(
+      blage = "Age at baseline (years)",
+      gender = "Sex",
+      edu_year = "Years of education",
+      mh62 = "Smoking status",
+      demcind = "Dementia/CIND during follow-up",
+    ) |>
+    gtsummary::tbl_summary(
+    by = demcind,
+    type = list(
+      all_continuous() ~ "continuous2",
+      c(gender, mh62) ~ "categorical"
+    ),
+    statistic = list(
+      all_continuous() ~ c("{mean} ({sd})", "{median} [{p25}, {p75}]"),
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = list(
+      all_continuous() ~ 1,
+      all_categorical() ~ c(0, 1)
+    ),
+    missing = "ifany",
+    missing_text = "Missing"
+    ) |>
+      gtsummary::add_overall() |>
+    # gtsummary::add_p(
+    #   test = list(
+    #     all_continuous() ~ "wilcox.test",
+    #     all_categorical() ~ "chisq.test"
+    #   )
+    # ) |>
+    gtsummary::modify_header(label = "**Characteristic**") |>
+    gtsummary::modify_spanning_header(c("stat_1", "stat_2") ~ "**Dementia/CIND   Status**") |>
+    gtsummary::modify_caption("**Table 1. Characteristics by dementia/CIND   status (N = {N})**") |>
+    gtsummary::bold_labels()
+
+
+}
+```
+
+## Combined Panel Figures
+
+The following combined panel figures show volcano plots and VIP scatter plots for both C18 and HILIC platforms for each air toxicant exposure.
+
+### Criteria Air Pollutants
+
+#### PM2.5
+
+![Combined panel for PM2.5](figures/combined_panel_exp_pm2.5.png){width=100%}
+
+#### NO2
+
+![Combined panel for NO2](figures/combined_panel_exp_no2.png){width=100%}
+
+#### NOx
+
+![Combined panel for NOx](figures/combined_panel_exp_nox.png){width=100%}
+
+#### O3
+
+![Combined panel for O3](figures/combined_panel_exp_o3.png){width=100%}
+
+### Air Toxics
+
+#### Benzene
+
+![Combined panel for Benzene](figures/combined_panel_exp_benzene.png){width=100%}
+
+#### 1,3-Butadiene
+
+![Combined panel for 1,3-Butadiene](figures/combined_panel_exp_butadiene.png){width=100%}
+
+### Metals
+
+#### Chromium
+
+![Combined panel for Chromium](figures/combined_panel_exp_chromium.png){width=100%}
+
+#### Lead
+
+![Combined panel for Lead](figures/combined_panel_exp_lead.png){width=100%}
+
+#### Nickel
+
+![Combined panel for Nickel](figures/combined_panel_exp_nickel.png){width=100%}
+
+#### Zinc
+
+![Combined panel for Zinc](figures/combined_panel_exp_zinc.png){width=100%}
+
+## Correlation of Effect Sizes Across Exposures
+
+The following heatmaps show the correlation of metabolite effect sizes (log fold changes) across different air toxicant exposures, based on metabolites that were significant (FDR < 0.1 or VIP > 2) for at least one exposure.
+
+### C18 Platform
+
+![Correlation of effect sizes across exposures - C18](figures/exposure_correlation_C18.png){width=80%}
+
+### HILIC Platform
+
+![Correlation of effect sizes across exposures - HILIC](figures/exposure_correlation_HILIC.png){width=80%}
+
+## Heatmaps of Top Significant Metabolites
+
+The following heatmaps display the log fold changes of the top 50 significant metabolites across all air toxicant exposures.
+
+### C18 Platform
+
+![Heatmap of top 50 significant metabolites - C18](figures/heatmap_top50_C18.png){width=80%}
+
+### HILIC Platform
+
+![Heatmap of top 50 significant metabolites - HILIC](figures/heatmap_top50_HILIC.png){width=80%}
+
+## Pathway Enrichment Analysis
+
+Pathway enrichment analysis was performed using Mummichog to identify biological pathways associated with air toxicant exposures. Significant metabolites from the MWAS were mapped to known metabolic pathways, and Fisher's exact test was used to assess pathway enrichment.
+
+### Summary of Enriched Pathways
+
+The following figure summarizes the significant pathways (p < 0.05) identified across all air toxicant exposures. Pathways are grouped by metabolic category:
+
+- **Amino acid metabolism**: Pathways involving amino acid biosynthesis, degradation, glutathione, and interconversion
+- **Lipid metabolism**: Fatty acid, sphingolipid, and steroid metabolism pathways
+- **Carbohydrate metabolism**: Glucose, fructose, glycan biosynthesis, and other sugar metabolism pathways
+- **Energy metabolism**: TCA cycle, oxidative phosphorylation, and related pathways
+- **Vitamin/cofactor metabolism**: Vitamin biosynthesis and cofactor metabolism
+- **Secondary metabolite metabolism**: Alkaloid biosynthesis and related pathways
+- **Xenobiotic metabolism**: Drug metabolism, benzoate degradation, and detoxification pathways
+
+![Pathway enrichment summary across all exposures](figures/pathway_enrichment_summary.png){width=100%}
+
+### Pathway Details by Category
+
+#### Amino Acid Metabolism
+
+![Amino acid metabolism pathways](figures/pathway_amino acid.png){width=90%}
+
+#### Lipid Metabolism
+
+![Lipid metabolism pathways](figures/pathway_lipid.png){width=90%}
+
+#### Energy Metabolism
+
+![Energy metabolism pathways](figures/pathway_energy.png){width=90%}
+
+#### Carbohydrate Metabolism
+
+![Carbohydrate metabolism pathways](figures/pathway_carbohydrate.png){width=90%}
+
+
+#### Vitamin/Cofactor Metabolism
+
+![Vitamin and cofactor metabolism pathways](figures/pathway_vitamin_cofactor.png){width=90%}
+
+#### Secondary Metabolite Metabolism
+
+![Secondary metabolite pathways](figures/pathway_secondary.png){width=90%}
+
+#### Xenobiotic Metabolism
+
+![Xenobiotic metabolism pathways](figures/pathway_xenobiotic.png){width=90%}
+
+# Questions for Further Clarification
+
+## Question 1: NOx Exposure Data Availability
+
+**Current situation:** NOx exposure data is only available from 1998 to 2002, which differs from other air toxicants that have longer time series.
+
+**Reference:** In Dr. Paul's paper "Traffic-Related Air Pollution and Incident Dementia: Direct and Indirect Pathways Through Metabolic Dysfunction," the NOx exposure was defined as "the average TRAP-NOx estimated exposure during the year of enrollment."
+
+**Questions to address:**
+
+- Do we have monthly or annual NOx data from the CALINE model that extends beyond 2002?
+
+
+## Question 2: Stratification by Dementia/CIND Status
+
+**Should we separate the analysis by `demcind` status (dementia or cognitive impairment no dementia)?**
+
+**Proposed approaches:**
+
+1. Primary analysis: All participants (current approach)
+2. Sensitivity analysis: Exclude participants who developed dementia/CIND during follow-up
+3. Stratified analysis: Separate MWAS for demcind=0 vs demcind=1
+
+
+## Question 3: Exposure Transformation Methods
+
+**Should we use different exposure measurements instead of Z-transformation?**
+
+**Current approach:** Z-transformation (standardization) - centered at mean, scaled by standard deviation
+
+**Alternative approaches:**
+
+- Log-transformation
+- IQR scaling
+- ...
+
+## Additional Questions to Consider
+
+### Question 4: Covariate Adjustment
+
+**Current residualization approach:** 
+- Age (baseline)
+- Sex
+- Smoking status
+- Education
+
+**Potential confounders to consider:**
+
+- BMI
+- Diabetes status
+- Medication use
+- ...
+
 
 

@@ -35,6 +35,11 @@ library(ggnewscale)
 
 load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
 
+
+load(here::here("data", "metabolomics", 
+                "processed", "mwas_annotation.RData"))
+
+
 # Create output directory
 dir.create(here::here("figures", "mwas"), 
            showWarnings = FALSE, recursive = TRUE)
@@ -46,7 +51,8 @@ dir.create(here::here("figures", "mwas"),
 
 # Function to create volcano plot --------------------------------------------
 
-create_volcano_plot <- function(mwas_result, vip_result, exposure_name,
+create_volcano_plot <- function(mwas_result, vip_result, annotation_result, 
+                                exposure_name,
                                  column_type = "C18",
                                  fdr_threshold = 0.05,
                                  vip_threshold = 2,
@@ -61,6 +67,14 @@ create_volcano_plot <- function(mwas_result, vip_result, exposure_name,
         dplyr::select(met, VIP = comp1),
       by = "met"
     ) |>
+    dplyr::left_join(
+      annotation_result |>
+        dplyr::select(met, chemical_id, chemical_name, reference),
+      by = "met"
+    ) |>
+    dplyr::group_by(met) |>
+    dplyr::slice_head(n = 1) |>  # In case of multiple matches
+    dplyr::ungroup() |>
     dplyr::mutate(
       neg_log10_p = -log10(P.Value),
       significant = case_when(
@@ -75,13 +89,16 @@ create_volcano_plot <- function(mwas_result, vip_result, exposure_name,
 
   # Get top metabolites for labeling (by VIP or p-value)
   top_mets <- plot_data |>
-    dplyr::filter(adj.P.Val < fdr_threshold | VIP > vip_threshold) |>
-    dplyr::arrange(P.Value) |>
-    dplyr::slice_head(n = n_labels) |>
+    dplyr::filter(
+      is.finite(VIP), !is.na(chemical_name), chemical_name != "",
+      adj.P.Val < fdr_threshold | VIP > vip_threshold) |>
+    # dplyr::arrange(P.Value) |>
+    # dplyr::slice_head(n = n_labels) |>
+    dplyr::slice_max(order_by = VIP, n = n_labels, with_ties = FALSE) |>
     dplyr::pull(met)
 
   plot_data <- plot_data |>
-    dplyr::mutate(label = ifelse(met %in% top_mets, met, ""))
+    dplyr::mutate(label = ifelse(met %in% top_mets, chemical_name, ""))
 
   # Create volcano plot
   p <- ggplot(plot_data, aes(x = logFC, y = neg_log10_p)) +
@@ -157,6 +174,7 @@ volcano_c18 <- exposure_vars |>
     create_volcano_plot(
       mwas_results_c18[[exp]],
       vip_c18[[exp]],
+      mwas_c18_annotated[[exp]],
       exposure_name = exp,
       column_type = "C18"
     )
@@ -169,6 +187,7 @@ volcano_hilic <- exposure_vars |>
     create_volcano_plot(
       mwas_results_hilic[[exp]],
       vip_hilic[[exp]],
+      mwas_hilic_annotated[[exp]],
       exposure_name = exp,
       column_type = "HILIC"
     )
@@ -202,7 +221,8 @@ purrr::iwalk(volcano_hilic, function(p, exp) {
 
 # Function to create VIP vs logFC scatter plot -------------------------------
 
-create_vip_scatter <- function(mwas_result, vip_result, exposure_name,
+create_vip_scatter <- function(mwas_result, vip_result, annotation_result,
+                               exposure_name,
                                 column_type = "C18",
                                 vip_threshold = 2,
                                 n_labels = 10) {
@@ -216,6 +236,14 @@ create_vip_scatter <- function(mwas_result, vip_result, exposure_name,
         dplyr::select(met, VIP = comp1),
       by = "met"
     ) |>
+    dplyr::left_join(
+      annotation_result |>
+        dplyr::select(met, chemical_id, chemical_name, reference),
+      by = "met"
+    ) |>
+    dplyr::group_by(met) |>
+    dplyr::slice_head(n = 1) |>  # In case of multiple matches
+    dplyr::ungroup() |>
     dplyr::mutate(
       category = case_when(
         VIP > vip_threshold & logFC > 0 ~ "VIP>2 & Positive",
@@ -226,13 +254,18 @@ create_vip_scatter <- function(mwas_result, vip_result, exposure_name,
 
   # Top metabolites for labeling
   top_mets <- plot_data |>
-    dplyr::filter(VIP > vip_threshold) |>
-    dplyr::arrange(desc(VIP)) |>
-    dplyr::slice_head(n = n_labels) |>
+    dplyr::filter(
+      is.finite(VIP), !is.na(chemical_name), chemical_name != "",
+      VIP > vip_threshold) |>
+    # dplyr::arrange(P.Value) |>
+    # dplyr::slice_head(n = n_labels) |>
+    dplyr::slice_max(order_by = VIP, n = n_labels, with_ties = FALSE) |>
     dplyr::pull(met)
-
+  
   plot_data <- plot_data |>
-    dplyr::mutate(label = ifelse(met %in% top_mets, met, ""))
+    dplyr::mutate(label = ifelse(met %in% top_mets, chemical_name, ""))
+  
+
 
   # Create plot
   p <- ggplot(plot_data, aes(x = logFC, y = VIP)) +
@@ -288,6 +321,7 @@ vip_scatter_c18 <- exposure_vars |>
     create_vip_scatter(
       mwas_results_c18[[exp]],
       vip_c18[[exp]],
+      mwas_c18_annotated[[exp]],
       exposure_name = exp,
       column_type = "C18"
     )
@@ -299,6 +333,7 @@ vip_scatter_hilic <- exposure_vars |>
     create_vip_scatter(
       mwas_results_hilic[[exp]],
       vip_hilic[[exp]],
+      mwas_hilic_annotated[[exp]],
       exposure_name = exp,
       column_type = "HILIC"
     )
@@ -583,6 +618,383 @@ if (length(nox_exposures) > 0) {
       width = 12, height = 6, dpi = 300
     )
   })
+}
+
+
+# =============================================================================
+# SECTION 7: PATHWAY ENRICHMENT PLOTS
+# =============================================================================
+
+# Load additional packages for pathway visualization --------------------------
+
+library(ggthemes)
+
+# Define pathway categories ---------------------------------------------------
+
+amino_acid_metabolism <- c("Alanine", "Aspartate", "Asparagine",
+                           "Arginine", "Histidine", "Lysine",
+                           "Methionine", "Tryptophan", "Tyrosine",
+                           "amino", "Dibasic", "Valine", "Glutamate",
+                           "Glycine", "Serine", "Threonine", "Proline",
+                           "Cysteine", "Phenylalanine", "Leucine",
+                           "Glutathione")
+
+carbohydrate_metabolism <- c("Fructose", "Galactose", "Starch", "Hexose",
+                             "Blood", "Glycan", "Keratan", "Sialic",
+                             "Hyaluronan", "Glucose", "Mannose", "Sucrose",
+                             "Chondroitin", "Heparan")
+
+lipid_metabolism <- c("Bile", "Fatty", "lipid", "Phytanic",
+                      "Cholesterol", "neuroprostanes", "steroid",
+                      "Sphingolipid", "Glycerophospholipid", "Phospholipid",
+                      "Triglyceride", "Ceramide")
+
+energy_metabolism <- c("Butanoate", "Carnitine", "Glycolysis",
+                       "Pyruvate", "Pentose", "octadecatrienoate",
+                       "TCA", "Citrate", "Oxidative")
+
+inflammation_metabolism <- c("Arachidonic", "Leukotriene", "Prostaglandin",
+                             "linoleic", "Linoleate", "Eicosanoid")
+
+vitamin_cofactor_metabolism <- c("Vitamin", "Biopterin", "Lipoate",
+                                 "Porphyrin", "Catabolism", "Purine",
+                                 "Caffeine", "Folate", "Riboflavin",
+                                 "Thiamine", "Biotin", "Pantothenate")
+
+signaling_metabolism <- c("Dynorphin", "Dopamine", "Serotonin",
+                          "Catecholamine", "Neurotransmitter")
+
+secondary_metabolite_metabolism <- c("Alkaloid")
+
+xenobiotic_metabolism <- c("Xenobiotic", "Drug", "Benzoate")
+
+# Function to categorize pathways ---------------------------------------------
+
+categorize_pathway <- function(pathway_name) {
+  case_when(
+    str_detect(pathway_name,
+               regex(str_c(amino_acid_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "amino acid",
+    str_detect(pathway_name,
+               regex(str_c(carbohydrate_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "carbohydrate",
+    str_detect(pathway_name,
+               regex(str_c(lipid_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "lipid",
+    str_detect(pathway_name,
+               regex(str_c(energy_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "energy",
+    str_detect(pathway_name,
+               regex(str_c(inflammation_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "inflammation",
+    str_detect(pathway_name,
+               regex(str_c(vitamin_cofactor_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "vitamin/cofactor",
+    str_detect(pathway_name,
+               regex(str_c(signaling_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "signaling",
+    str_detect(pathway_name,
+               regex(str_c(secondary_metabolite_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "secondary",
+    str_detect(pathway_name,
+               regex(str_c(xenobiotic_metabolism, collapse = "|"),
+                     ignore_case = TRUE)) ~ "xenobiotic",
+    TRUE ~ "other"
+  )
+}
+
+
+# Read pathway enrichment results ---------------------------------------------
+
+# Get all mummichog pathway enrichment files
+pathway_files <- list.files(
+  here::here("metaboAnalyst"),
+  pattern = "mummichog_pathway_enrichment",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+# Function to read and process pathway file
+read_pathway_file <- function(file_path) {
+  # Extract exposure name from file path
+  dir_name <- basename(dirname(file_path))
+
+  # Read the file (handle both csv and xlsx)
+  if (grepl("\\.csv$", file_path)) {
+    df <- readr::read_csv(file_path, show_col_types = FALSE)
+  } else if (grepl("\\.xlsx$", file_path)) {
+    df <- readxl::read_xlsx(file_path)
+  } else {
+    return(NULL)
+  }
+
+  # Standardize column names
+  df <- df |>
+    dplyr::rename_with(tolower) |>
+    dplyr::rename(
+      pathway_name = any_of(c("...1", "pathway", "pathway_name", "name")),
+      pathway_size = any_of(c("pathway total", "pathway_total", "total")),
+      hits_total = any_of(c("hits.total", "hits_total", "total_hits")),
+      hits_sig = any_of(c("hits.sig", "hits_sig", "sig_hits")),
+      p_value = any_of(c("p(fisher)", "p.value", "pvalue", "p_value", "fisher_p"))
+    )
+
+  # Add exposure info
+  df |>
+    dplyr::mutate(
+      exposure = dir_name,
+      category = categorize_pathway(pathway_name)
+    )
+}
+
+# Read all pathway files if they exist
+if (length(pathway_files) > 0) {
+
+  pathway_all <- pathway_files |>
+    purrr::map(read_pathway_file) |>
+    purrr::compact() |>
+    purrr::list_rbind()
+
+  if (nrow(pathway_all) > 0) {
+
+    # Filter significant pathways
+    pathway_sig <- pathway_all |>
+      dplyr::filter(p_value < 0.05) |>
+      dplyr::arrange(p_value)
+
+    # Save significant pathways to Excel
+    if (nrow(pathway_sig) > 0) {
+      writexl::write_xlsx(
+        pathway_sig,
+        here::here("tables", "mwas_results", "pathway_sig_all.xlsx")
+      )
+    }
+
+    # Create pathway summary plot if we have significant pathways
+    if (nrow(pathway_sig) > 0) {
+
+      # Step 1: Get unique pathway/category combinations with min p-value
+      pathway_summary <- pathway_sig |>
+        dplyr::group_by(pathway_name, category) |>
+        dplyr::summarise(
+          min_p = min(p_value, na.rm = TRUE),
+          .groups = "drop"
+        )
+
+      # Step 2: Order categories by their minimum p-value (best category first)
+      # Reverse so smallest p-value category appears at TOP of figure
+      category_order <- pathway_summary |>
+        dplyr::group_by(category) |>
+        dplyr::summarise(cat_min_p = min(min_p), .groups = "drop") |>
+        dplyr::arrange(desc(cat_min_p)) |>
+        dplyr::pull(category)
+
+      # Step 3: Sort pathways - first by category order, then by p-value within category
+      # Within each category, sort descending so smallest p-value appears at TOP
+      pathway_sorted <- pathway_summary |>
+        dplyr::mutate(category = factor(category, levels = category_order)) |>
+        dplyr::arrange(category, desc(min_p)) |>
+        dplyr::mutate(pathway_name = fct_inorder(pathway_name))
+
+      # Step 4: Prepare data for plotting with proper factor levels
+      pathway_plot_data <- pathway_sig |>
+        dplyr::mutate(
+          category = factor(category, levels = category_order),
+          pathway_name = factor(pathway_name, levels = levels(pathway_sorted$pathway_name)),
+          exposure_clean = gsub("exp_", "", exposure)
+        )
+
+      # Get unique categories for color palette (in order)
+      cats <- category_order
+      pal <- ggthemes::tableau_color_pal("Tableau 10")(length(cats))
+      names(pal) <- cats
+
+
+      # Create heatmap of pathway p-values across exposures
+      pathway_heatmap <- pathway_plot_data |>
+        ggplot() +
+        geom_tile(
+          aes(x = exposure_clean, y = pathway_name, fill = p_value),
+          lwd = 1.2,
+          linetype = 1,
+          color = "white"
+        ) +
+        scale_fill_gradient(
+          low = "#E41A1C",
+          high = "#FFFFB2",
+          limits = c(0, 0.05),
+          breaks = c(0.01, 0.03, 0.05),
+          labels = c("0.01", "0.03", "0.05"),
+          name = "p-value"
+        ) +
+        coord_fixed(0.8) +
+        labs(
+          y = "Pathway",
+          x = "Exposure"
+        ) +
+        theme_classic() +
+        theme(
+          legend.position = "bottom",
+          legend.title = element_text(face = "bold", size = 12),
+          legend.text = element_text(size = 10),
+          axis.line = element_blank(),
+          panel.border = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title.y = element_text(face = "bold", size = 14),
+          axis.title.x = element_text(face = "bold", size = 14),
+          axis.text.y = element_text(size = 10),
+          axis.text.x = element_text(size = 10, angle = 45, hjust = 1)
+        )
+
+
+      # Create barplot of pathway counts by exposure
+      pathway_barplot <- pathway_plot_data |>
+        ggplot() +
+        geom_bar(
+          aes(y = pathway_name, fill = exposure_clean),
+          stat = "count",
+          width = 0.9
+        ) +
+        scale_fill_tableau("Tableau 10") +
+        labs(
+          y = "",
+          x = "Number of exposures",
+          fill = "Exposure"
+        ) +
+        theme_classic() +
+        theme(
+          legend.position = "bottom",
+          legend.title = element_text(face = "bold", size = 12),
+          legend.text = element_text(size = 10),
+          axis.line = element_blank(),
+          panel.border = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.title.x = element_text(face = "bold", size = 14),
+          axis.text.y = element_blank(),
+          axis.text.x = element_text(size = 12)
+        )
+
+
+      # Create color block for pathway categories
+      # Count pathways per category in the SAME order as the heatmap
+      category_summary <- pathway_sorted |>
+        dplyr::group_by(category) |>
+        dplyr::summarise(
+          category_count = n(),
+          .groups = "drop"
+        ) |>
+        # Keep the same category order
+        dplyr::mutate(category = factor(category, levels = category_order)) |>
+        dplyr::arrange(category) |>
+        # Calculate positions from bottom to top (matching ggplot y-axis)
+        dplyr::mutate(
+          ymax = cumsum(category_count),
+          ymin = lag(ymax, default = 0),
+          pos = (ymin + ymax) / 2
+        )
+
+      pathway_color_block <- category_summary |>
+        ggplot() +
+        geom_rect(
+          aes(xmin = 0.5, xmax = 1.5,
+              ymin = ymin + 0.1, ymax = ymax - 0.1,
+              fill = category),
+          alpha = 0.5
+        ) +
+        geom_text(
+          aes(x = 1, y = pos, label = category),
+          size = 3,
+          fontface = "italic"
+        ) +
+        scale_fill_manual(values = pal, limits = cats, drop = FALSE) +
+        theme_void() +
+        guides(fill = "none") +
+        scale_y_continuous(
+          limits = c(0, nrow(pathway_sorted)),
+          expand = c(0, 0)
+        ) +
+        scale_x_continuous(expand = c(0, 0))
+
+
+      # Combine plots using patchwork
+      pathway_combined <- pathway_color_block + pathway_heatmap + pathway_barplot +
+        patchwork::plot_layout(
+          widths = c(0.2, 0.4, 0.4),
+          guides = "collect"
+        ) &
+        theme(legend.position = "bottom")
+
+      # Save combined pathway plot
+      ggsave(
+        filename = here::here("figures", "mwas", "pathway_enrichment_summary.png"),
+        plot = pathway_combined,
+        width = 16,
+        height = max(8, nrow(pathway_sorted) * 0.3),
+        dpi = 300
+      )
+
+
+      # Create individual pathway heatmap for each category
+      pathway_by_category <- pathway_sig |>
+        dplyr::group_by(category) |>
+        dplyr::group_split()
+
+      purrr::walk(pathway_by_category, function(cat_data) {
+        if (nrow(cat_data) < 2) return(NULL)
+
+        cat_name <- unique(cat_data$category)
+
+        p <- cat_data |>
+          dplyr::mutate(
+            pathway_name = fct_reorder(pathway_name, p_value),
+            exposure_clean = gsub("exp_", "", exposure)
+          ) |>
+          ggplot() +
+          geom_tile(
+            aes(x = exposure_clean, y = pathway_name, fill = p_value),
+            color = "white",
+            lwd = 1
+          ) +
+          scale_fill_gradient(
+            low = "#E41A1C",
+            high = "#FFFFB2",
+            limits = c(0, 0.05),
+            name = "p-value"
+          ) +
+          labs(
+            title = paste0("Pathway Enrichment: ", cat_name, " metabolism"),
+            x = "Exposure",
+            y = "Pathway"
+          ) +
+          theme_classic() +
+          theme(
+            plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+            legend.position = "right",
+            axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+            axis.text.y = element_text(size = 9),
+            axis.title = element_text(face = "bold", size = 12)
+          )
+
+        ggsave(
+          filename = here::here("figures", "mwas",
+                                glue::glue("pathway_{gsub('/', '_', cat_name)}.png")),
+          plot = p,
+          width = 10,
+          height = max(6, nrow(cat_data) * 0.25),
+          dpi = 300
+        )
+      })
+
+      message("Pathway enrichment plots created!")
+
+    } else {
+      message("No significant pathways found (p < 0.05)")
+    }
+  } else {
+    message("No pathway data could be read from files")
+  }
+} else {
+  message("No pathway enrichment files found in metaboAnalyst directory")
 }
 
 

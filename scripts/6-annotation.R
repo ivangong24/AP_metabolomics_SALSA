@@ -21,6 +21,12 @@
 ##       Dependencies: Run scripts 1-5 before this script.
 ## ---------------------------
 
+# Load required packages -----------------------------------------------------
+
+library(tidyverse)
+library(writexl)
+
+
 # Load annotation files (m/z and retention time)
 # These should contain: chemical_ID, mz, time (retention time)
 annotation_c18 <- read_csv(
@@ -54,6 +60,8 @@ load(here::here("data", "metabolomics", "mz_links",
                 "hil_mz_rt_link.Rdata"))
 
 load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
+
+load(here::here("data", "processed",  "metabolomics_met_link.RData"))
 
 
 # check if there are overlap metabolite features within the inhouse library
@@ -166,16 +174,10 @@ list(
 
 # Save R objects for downstream analysis -------------------------------------
 
-list(
-  list(mwas_c18_annotated, mwas_hilic_annotated),
-  list("c18", "hilic")
-) |>
-  purrr::pmap(function(met_df, mode){
-    save(met_df,
-         file = here::here("data", "metabolomics", "processed",
-                           paste0("met_", mode, "_annotation.Rdata")))
-    message(paste0("Annotation data for ", mode, " saved successfully!"))
-  }) |>
-  invisible()
+save(mwas_c18_annotated, mwas_hilic_annotated, 
+     file = here::here("data", "metabolomics", "processed",
+                       "mwas_annotation.RData"))
+
+
 
 #--------------------------------End of the code--------------------------------

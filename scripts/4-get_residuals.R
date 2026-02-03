@@ -200,22 +200,19 @@ list(
 list(
   list(combined_residual_c18,
        combined_residual_hilic),
-  list(sample_link_c18,
-       sample_link_hilic),
   list("c18", "hilic")
 ) |>
-  pmap(function(data1, data2, mode){
+  pmap(function(data, mode){
     save(data1,
          file = here::here("data", "metabolomics", "processed",
                            paste0("combined_residual_", mode, ".Rdata")))
     message(paste0("Residual matrices for ", mode, " saved successfully!"))
-    
-    save(data2,
-         file = here::here("data", "links", "processed",
-                           paste0("sample_link_", mode, ".Rdata")))
-    message(paste0("Sample link data for ", mode, " saved successfully!"))
   }) |>
   invisible()
 
+
+save(sample_link_c18, sample_link_hilic,
+     file = here::here("data", "links", "processed",
+                       "Sample_links.RData"))
 
 #--------------------------------End of the code--------------------------------
