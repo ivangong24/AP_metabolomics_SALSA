@@ -217,4 +217,10 @@ extreme_remove_percentile_win <- function(x) {
     TRUE ~ x)
 }
 
+create_dir <- function(dir){
+  if(!dir.exists(dir)){
+    dir.create(dir)
+  }
+}
+
 #--------------------------------End of the code--------------------------------

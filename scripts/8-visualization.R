@@ -36,7 +36,8 @@ library(ggnewscale)
 load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
 
 # Create output directory
-dir.create(here::here("figures", "mwas"), showWarnings = FALSE, recursive = TRUE)
+dir.create(here::here("figures", "mwas"), 
+           showWarnings = FALSE, recursive = TRUE)
 
 
 # =============================================================================

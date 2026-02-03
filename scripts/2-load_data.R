@@ -87,8 +87,8 @@
 
   # set link datanames
   
-  link_data_names <- list.dirs(here("data", "links"), recursive = TRUE) |>
-    list.files(pattern = "\\.(csv|txt)$", 
+  link_data_names <- list.dirs(here("data", "links"), recursive = FALSE) |>
+    list.files(pattern = "\\.(csv|txt|Rdata)$", 
       full.names = TRUE, recursive = TRUE) |>
     (\(files) {
       files |>
@@ -98,8 +98,8 @@
     })()
   
   # load link data
-  list.dirs(here("data", "links"),recursive = TRUE) |> 
-    list.files("\\.(csv|txt)$", full.names = TRUE, recursive = T) |> 
+  list.dirs(here("data", "links"),recursive = FALSE) |> 
+    list.files("\\.(csv|txt|Rdata)$", full.names = TRUE, recursive = T) |> 
     purrr::map(read_file) |> 
     purrr::map(~rename_all(.x, str_to_lower)) |> 
     purrr::set_names(link_data_names) |> 

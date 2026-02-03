@@ -1,6 +1,6 @@
 ## ---------------------------
 ##
-## Script name: 8-pathway_analysis.R
+## Script name: 7-pathway_analysis.R
 ## Purpose of script: To perform pathway analysis using Mummichog
 ##                    for significant metabolites from MWAS
 ##
@@ -32,24 +32,13 @@ library(writexl)
 
 load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
 
-# Load annotation files (m/z and retention time)
-# These should contain: chemical_ID, mz, time (retention time)
-annotation_c18 <- read_csv(
-  here::here("data", "metabolomics", "annotation", "xmsannotator_c18neg.csv"),
-  show_col_types = FALSE
-) |>
-  rename_all(str_to_lower)
-
-annotation_hilic <- read_csv(
-  here::here("data", "metabolomics", "annotation", "xmsannotator_hilicpos.csv"),
-  show_col_types = FALSE
-) |>
-  rename_all(str_to_lower)
 
 # Create output directories --------------------------------------------------
 
-dir.create(here::here("metaboAnalyst", "Input"), showWarnings = FALSE, recursive = TRUE)
-dir.create(here::here("metaboAnalyst", "Output"), showWarnings = FALSE, recursive = TRUE)
+dir.create(here::here("metaboAnalyst", "Input"), 
+           showWarnings = FALSE, recursive = TRUE)
+dir.create(here::here("metaboAnalyst", "Output"), 
+           showWarnings = FALSE, recursive = TRUE)
 
 
 # =============================================================================
@@ -58,24 +47,26 @@ dir.create(here::here("metaboAnalyst", "Output"), showWarnings = FALSE, recursiv
 
 # Function to create Mummichog input format ----------------------------------
 
-create_mummichog_input <- function(mwas_result, annotation_df, mode) {
+create_mummichog_input <- function(mwas_result, mz_rt_link_df, mode) {
   # Mummichog input format:
   # m.z | rt | p.value | t.score | mode
 
   # Get chemical_ID column name (may vary)
   id_col <- intersect(
-    c("chemical_id", "id", "met", "feature"),
-    tolower(colnames(annotation_df))
+    c("met", "mz_rt"),
+    tolower(colnames(mz_rt_link_df))
   )[1]
 
   # Get m/z and retention time columns
-  mz_col <- intersect(c("mz", "m.z", "mass"), tolower(colnames(annotation_df)))[1]
-  rt_col <- intersect(c("time", "rt", "retention_time"), tolower(colnames(annotation_df)))[1]
+  mz_col <- intersect(c("mz", "m.z", "mass"), 
+                      tolower(colnames(mz_rt_link_df)))[1]
+  rt_col <- intersect(c("time", "rt", "retention_time"), 
+                      tolower(colnames(mz_rt_link_df)))[1]
 
   mwas_result |>
     tibble::rownames_to_column("met") |>
     dplyr::left_join(
-      annotation_df |>
+      mz_rt_link_df |>
         dplyr::rename(met = !!sym(id_col)),
       by = "met"
     ) |>
@@ -101,7 +92,7 @@ mummichog_input_c18 <- exposure_vars |>
   purrr::map(function(exp) {
     create_mummichog_input(
       mwas_results_c18[[exp]],
-      annotation_c18,
+      c18_mz_rt_link_mz_links,
       mode = "negative"
     )
   })
@@ -112,7 +103,7 @@ mummichog_input_hilic <- exposure_vars |>
   purrr::map(function(exp) {
     create_mummichog_input(
       mwas_results_hilic[[exp]],
-      annotation_hilic,
+      hil_mz_rt_link_mz_links,
       mode = "positive"
     )
   })
@@ -137,7 +128,7 @@ purrr::iwalk(mummichog_input_combined, function(df, exp) {
   write.table(
     df,
     file = here::here("metaboAnalyst", "Input",
-                      paste0("mwas_", exp, "_combined.txt")),
+                      paste0("mwas_", exp, ".txt")),
     row.names = FALSE,
     col.names = TRUE,
     quote = FALSE,
@@ -152,76 +143,70 @@ message("Mummichog input files created in metaboAnalyst/Input/")
 # SECTION 2: RUN MUMMICHOG PATHWAY ANALYSIS
 # =============================================================================
 
+#### create directories in "metaboAnalyst/" for each exposure
+
+exposure_vars <- names(mwas_results_c18)
+
+exposure_vars %>% 
+  map(function(exp_name){
+    create_dir(paste0("metaboAnalyst/Output/", exp_name))
+  })
+
+wd_num_list <- list.dirs("metaboAnalyst/") %>% 
+  grep("exp",.,value=TRUE, ignore.case = TRUE)
+
+input_list <- list.files("metaboAnalyst/Input", full.names = TRUE) %>% 
+  str_remove("metaboAnalyst/Input/")
+
+pathway_name_list <- input_list %>% 
+  str_remove(".txt") %>% 
+  map(function(name){
+    str_c("p_pathway","_", name)
+  })
+
+
 # Function to run Mummichog using MetaboAnalystR -----------------------------
 
-run_mummichog <- function(input_file, output_dir, exposure_name,
-                           p_cutoff = 0.05,
-                           organism = "hsa") {
-  # Initialize MetaboAnalystR object
-  mSet <- MetaboAnalystR::InitDataObjects("mass_table", "mummichog", FALSE)
-
-  # Set peak format
-  mSet <- MetaboAnalystR::SetPeakFormat(mSet, "mprt")
-
-  # Read peak data
-  mSet <- MetaboAnalystR::Read.PeakListData(mSet, input_file)
-
-  # Set analysis parameters
-  mSet <- MetaboAnalystR::UpdateMummichogParameters(
-    mSet,
-    "0.05",  # p-value cutoff
-    "5"      # minimum number of hits
-  )
-
-  # Set organism
-  mSet <- MetaboAnalystR::SetOrganism(mSet, organism)
-
-  # Run Mummichog
-  mSet <- MetaboAnalystR::PerformMummichog(mSet, "hsa_mfn")
-
-  # Run GSEA
-  mSet <- MetaboAnalystR::PerformGSEA(mSet, "hsa_mfn")
-
-  # Save results
-  save(mSet, file = file.path(output_dir, paste0("mummichog_", exposure_name, ".RData")))
-
-  return(mSet)
-}
-
+setwd(here::here())
+source("scripts/function_mummichog.r")
 
 # Run Mummichog for each exposure --------------------------------------------
-
-# Create output directories for each exposure
-purrr::walk(exposure_vars, function(exp) {
-  dir.create(
-    here::here("metaboAnalyst", "Output", exp),
-    showWarnings = FALSE,
-    recursive = TRUE
-  )
-})
 
 # Run analysis (this may take some time)
 message("Running Mummichog pathway analysis...")
 
-mummichog_results <- tryCatch({
-  exposure_vars |>
-    purrr::set_names() |>
-    purrr::map(function(exp) {
-      message(paste0("Processing: ", exp))
-      run_mummichog(
-        input_file = here::here("metaboAnalyst", "Input",
-                                paste0("mwas_", exp, "_combined.txt")),
-        output_dir = here::here("metaboAnalyst", "Output", exp),
-        exposure_name = exp,
-        p_cutoff = 0.05,
-        organism = "hsa"
-      )
-    })
-}, error = function(e) {
-  message("Mummichog analysis failed. Error: ", e$message)
-  message("Please run pathway analysis manually using MetaboAnalyst web interface.")
-  return(NULL)
+system.time({
+  list(wd_num_list,
+       input_list) %>% 
+    pmap(function(wd_mum, input){
+      mummichog(wd_mum, input)
+    }) %>% 
+    set_names(pathway_name_list) %>%
+    list2env(.GlobalEnv)
 })
+
+
+
+
+# mummichog_results <- tryCatch({
+#   exposure_vars |>
+#     purrr::set_names() |>
+#     purrr::map(function(exp) {
+#       message(paste0("Processing: ", exp))
+#       run_mummichog(
+#         input_file = here::here("metaboAnalyst", "Input",
+#                                 paste0("mwas_", exp, ".txt")),
+#         output_dir = here::here("metaboAnalyst", "Output", exp),
+#         exposure_name = exp,
+#         p_cutoff = 0.05,
+#         organism = "hsa"
+#       )
+#     })
+# }, error = function(e) {
+#   message("Mummichog analysis failed. Error: ", e$message)
+#   message("Please run pathway analysis manually using MetaboAnalyst web interface.")
+#   return(NULL)
+# })
 
 
 # =============================================================================

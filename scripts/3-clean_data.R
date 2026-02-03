@@ -74,15 +74,35 @@
 
 ## clean air toxicants exposure data
 
-### get the average exposure for each air toxicant
+### clean the caline nox data for 1998-2002
+
+nox <- caline1789_nox_1998_2002 |> 
+  select(-unique_id) |>
+  tidyr::pivot_longer(
+    cols = starts_with("nox_"),
+    names_to = "date",
+    names_prefix = "nox_",
+    values_to = "nox"
+  ) |>
+  dplyr::mutate(
+    .source_dir = "nox",
+    date = lubridate::ymd(
+      stringr::str_c(date, "-01-01")
+    )
+  )
+
+mean(salsa_data_04212016$dcst, na.rm = TRUE)
+### get the 5-yr average exposure prior to baseline for each air toxicant
 {
   col_common <- quote_all(rand_id, date, .source_dir)
+  
+  exp_data_names_new <- c(exp_data_names, "nox")
 
   air_toxicants_avg_ztrans <- ls(envir = .GlobalEnv, all.names = TRUE) |> 
-    purrr::keep(~ str_detect(.x, regex(str_c(exp_data_names, collapse = "|"), 
+    purrr::keep(~ str_detect(.x, regex(str_c(exp_data_names_new, collapse = "|"), 
                                        ignore_case = TRUE))) |> 
-    # purrr::discard(~ str_detect(.x, regex(str_c("no2|o3|pm2_5"),
-    #                              ignore_case = TRUE))) |> 
+    purrr::discard(~ str_detect(.x, regex(str_c("caline|final"),
+                                 ignore_case = TRUE))) |>
     purrr::keep(~ exists(.x, envir = .GlobalEnv, inherits = TRUE)) |> 
     mget(envir = .GlobalEnv, inherits = TRUE) |> 
     (\(x) x[order(names(x))])() |> 
@@ -94,6 +114,12 @@
         dplyr::mutate(value = extreme_remove_percentile_win(value)) # winsorize the extreme values
     }) |> 
     purrr::list_rbind() |> 
+    dplyr::left_join(salsa_data_04212016 |> 
+                select(rand_id, enrollment), by = "rand_id") |>
+    dplyr::mutate(baseline_year = lubridate::year(enrollment),
+                  year = lubridate::year(date)) |>
+    dplyr::filter(year >= baseline_year - 5 | 
+                    toxicant == "nox") |>
     dplyr::group_by(rand_id, toxicant) |> 
     dplyr::summarize(
       avg_exp = mean(value, na.rm = TRUE),
@@ -110,7 +136,11 @@
 
 }
 
-### get the lagged mean exposure for each air toxicant
+cor(air_toxicants_avg_ztrans %>% 
+      select(-rand_id),
+    use = "complete.obs")
+
+### get the 1- 10-yr mean exposure prior to baseline for each air toxicant 
 {
   lag_windows <- c(1, 3, 5, 10)
 
@@ -262,20 +292,33 @@ caline_nox_iqr <- caline_nox_yearly %>%
 
 ## clean the link data
 
-salsa_mappling_list <- ls(envir = .GlobalEnv, all.names = TRUE) %>%
-  keep(~ str_detect(.x, regex("salsa_mapping", ignore_case = TRUE))) %>%
-  discard(~ str_detect(.x, regex("list",ignore_case = TRUE))) %>%
-  keep(~ exists(.x, envir = .GlobalEnv, inherits = TRUE)) %>%
-  mget(envir = .GlobalEnv, inherits = TRUE) %>%
+salsa_mapping_list <- ls(envir = .GlobalEnv, all.names = TRUE) |>
+  keep(~ str_detect(.x, regex("salsa_mapping", ignore_case = TRUE))) |>
+  discard(~ str_detect(.x, regex("list",ignore_case = TRUE))) |>
+  keep(~ exists(.x, envir = .GlobalEnv, inherits = TRUE)) |>
+  mget(envir = .GlobalEnv, inherits = TRUE) |>
   (\(x) x[order(names(x))])()
 
-salsa_mappling_list %>% 
+salsa_mapping_list |>
   purrr::map(function(data){
     data %>% 
-      dplyr::mutate(file.name_new = str_c(file.name, "mzXML", sep = ".")) %>% 
+      dplyr::mutate(file.name_new = str_c(file.name, "mzXML", sep = ".")) |> 
       dplyr::mutate(file.name_new = str_to_lower(file.name_new))
   }) %>% 
-  purrr::set_names(names(salsa_mappling_list)) %>%
+  purrr::set_names(names(salsa_mapping_list)) |>
+  list2env(.,envir = .GlobalEnv)
+
+list(raw_mzcalibrated_untargeted_mediansummarized_featuretable_c18neg,
+     raw_mzcalibrated_untargeted_mediansummarized_featuretable_hilicpos) |>
+  purrr::map(function(data){
+    data %>%
+      dplyr::mutate(met_new = str_c("mz_rt", round(mz, 4), 
+                                 round(time, 4), sep = "_"),
+                    met = str_c("mz_rt", round(mz, 4), 
+                                     round(time, 1), sep = "_")) |>
+      select(met, met_new)
+  }) %>%
+  purrr::set_names("met_c18", "met_hilic") %>%
   list2env(.,envir = .GlobalEnv)
 
 
@@ -285,16 +328,27 @@ salsa_mappling_list %>%
 
 ## Create final NOx exposure dataset with IQR scaling
 
-nox_exposure_final <- caline_nox_iqr |>
-  dplyr::select(rand_id, yearly_avg, monthly_std) |>
+
+nox_exposure_final <- salsa2_ap |>
+  dplyr::select(rand_id, nox, nox_iqr) |>
   dplyr::rename(
-    exp_nox = yearly_avg,
-    exp_nox_iqr = monthly_std
+    exp_nox = nox,
+    exp_nox_iqr = nox_iqr
   ) |>
   dplyr::distinct(rand_id, .keep_all = TRUE)
 
+# nox_exposure_final <- caline_nox_iqr |>
+#   dplyr::select(rand_id, yearly_avg, monthly_std) |>
+#   dplyr::rename(
+#     exp_nox = yearly_avg,
+#     exp_nox_iqr = monthly_std
+#   ) |>
+#   dplyr::distinct(rand_id, .keep_all = TRUE)
+
 
 ## Merge NOx with other air toxicants exposure data
+
+
 air_toxicants_all <- air_toxicants_avg_ztrans |>
   dplyr::left_join(nox_exposure_final, by = "rand_id") |>
   dplyr::mutate(
@@ -341,21 +395,25 @@ salsa_data_lagged <- salsa_clean |>
 # =============================================================================
 
 ## Create output directory
-dir.create(here::here("data", "processed"), showWarnings = FALSE, recursive = TRUE)
+dir.create(here::here("data", "processed"), 
+           showWarnings = FALSE, recursive = TRUE)
 
 ## Save cleaned datasets for downstream analysis
 
 save(salsa_clean,
      file = here::here("data", "processed", "salsa_clean.RData"))
 
-save(air_toxicants_avg_ztrans, air_toxicants_yearly, air_toxicants_all,
+save(air_toxicants_avg_ztrans, 
      file = here::here("data", "processed", "air_toxicants_exposure.RData"))
 
-save(nox_exposure_final, caline_nox_iqr,
-     file = here::here("data", "processed", "nox_exposure.RData"))
+save(met_c18, met_hilic,
+     file = here::here("data", "processed", "metabolomics_met_link.RData"))
 
-save(salsa_data_final, salsa_data_lagged,
-     file = here::here("data", "processed", "salsa_final_analysis.RData"))
+# save(nox_exposure_final, caline_nox_iqr,
+#      file = here::here("data", "processed", "nox_exposure.RData"))
+# 
+# save(salsa_data_final, salsa_data_lagged,
+#      file = here::here("data", "processed", "salsa_final_analysis.RData"))
 
 message("\nCleaned data saved to data/processed/")
 message("  - salsa_clean.RData")
