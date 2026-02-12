@@ -17,22 +17,33 @@
 ## clean the original salsa data
 {
   salsa_clean <- salsa_data_04212016 |> 
-    # removed people without baseline visit, n = 3
-    dplyr::filter(!is.na(bl_date)) |> 
-    # removed people with CIND at baseline, n = 115
-    dplyr::filter(
-      !(demcind == 1 & dcyear == 0) 
-    # | (demcind == 1 & blage >= ageatcind) 
-    # | (demcind == 1 & blage >= ageatdem)
-    ) |> 
-    # removed no-follow-ups & survival time = 0, n = 57
-    dplyr::filter(!(dplyr::if_all(av1_date:fv6_date, is.na) & dcst == 0)) |> 
+    # # removed people without baseline visit, n = 3
+    # dplyr::filter(!is.na(bl_date)) |> 
+    # # removed people with CIND at baseline, n = 115
+    # dplyr::filter(
+    #   !(demcind == 1 & dcyear == 0) 
+    # # | (demcind == 1 & blage >= ageatcind) 
+    # # | (demcind == 1 & blage >= ageatdem)
+    # ) |> 
+    # # removed no-follow-ups & survival time = 0, n = 57
+    # dplyr::filter(!(dplyr::if_all(av1_date:fv6_date, is.na) & dcst == 0)) |> 
     # n = 1614 for now, need to further restrict to people who provided all necessary information (n= 53)
     # but not sure what variables are needed yet
+    # join the wave variable to get the blood draw date
+    # dplyr::left_join(salsa_mapping_c18neg_surveylinked_03jun2025 |> 
+    #                    rename(
+    #                      batch_c18 = batch,
+    #                      wave_c18 = wave) |> 
+    #                    select(id, batch_c18, wave_c18), by = "id") |>
+    #  dplyr::left_join(salsa_mapping_hilicpos_surveylinked_03jun2025 |>
+    #                    rename(
+    #                      batch_hilic = batch,
+    #                      wave_hilic = wave) |> 
+    #                    select(id, batch_hilic, wave_hilic), by = "id")
     # this final number to this step may change after checking the variables needed
     ############################################################################################
-    dplyr::select(rand_id, bl_date, enrollment, blage, birth_date, gender, ageatcind, ageatdem,
-    ses3, cind, demcind, mh62) |> 
+    dplyr::select(rand_id, bl_date, enrollment, blage, birth_date, 
+                  gender, ageatcind, ageatdem, ses3, cind, demcind, mh62) |> 
     # check all variables contains "smoke", if any of them is not NA, then classify as "ever smoker"
     dplyr::rename(
       edu_year = ses3
@@ -44,6 +55,16 @@
     # impute missing data using mice, method = predictive mean matching (pmm)
     mice::mice(m = 5, maxit = 50, method = "pmm", seed = 42) |> 
     mice::complete(1) |> 
+    # join the linked id
+    dplyr::left_join(salsa_id, by = "rand_id") |>
+    # restrict to people who have metabolomics data
+    dplyr::filter(id %in% salsa_mapping_c18neg_surveylinked_03jun2025$id |
+                    id %in% salsa_mapping_hilicpos_surveylinked_03jun2025$id) |>
+    # join the follow up dates back
+    dplyr::left_join(salsa_data_04212016 |>
+                       select(rand_id, av1_date, fv2_date, fv3_date,
+                              fv4_date, fv5_date, fv6_date),
+                     by = "rand_id") |> 
     # dplyr::mutate(timediff_cind = ageatcind - blage,
     #   timediff_demcind = ageatdem - blage
     #   # index_cind = 
@@ -71,7 +92,6 @@
   
 }
 
-
 ## clean air toxicants exposure data
 
 ### clean the caline nox data for 1998-2002
@@ -94,6 +114,40 @@ nox <- caline1789_nox_1998_2002 |>
 mean(salsa_data_04212016$dcst, na.rm = TRUE)
 ### get the 5-yr average exposure prior to baseline for each air toxicant
 {
+  # link blood draw wave to visit date to determine the time window for calculating average exposure
+  list(salsa_mapping_c18neg_surveylinked_03jun2025,
+       salsa_mapping_hilicpos_surveylinked_03jun2025) |> 
+    purrr::map(function(data){
+      data |> 
+        dplyr::left_join(salsa_clean |> 
+                    select(rand_id, id, ends_with("date")), by = "id") |> 
+        mutate(blood_date = case_when(
+          wave == 0 ~ bl_date,
+          wave == 1 ~ av1_date,
+          wave == 2 ~ fv2_date,
+          wave == 3 ~ fv3_date,
+          wave == 4 ~ fv4_date,
+          wave == 5 ~ fv5_date,
+          wave == 6 ~ fv6_date,
+          TRUE ~ NA_Date_
+        ))
+    }) |> 
+    purrr::set_names("salsa_blood_date_c18", "salsa_blood_date_hilic") |>
+    list2env(.GlobalEnv)
+  
+  # check if the blood date for c18 and hilic are the same
+  
+   all(salsa_blood_date_c18$blood_date == salsa_blood_date_hilic$blood_date, 
+       na.rm = TRUE)
+   
+   # join the blood_date to salsa_clean and make it a long format dataset for later use
+   
+   salsa_clean_long <- salsa_clean |> 
+     left_join(salsa_blood_date_c18 |> 
+                 select(rand_id, blood_date), by = "rand_id") |> 
+     select(-starts_with("av"), -starts_with("fv"))
+  
+  
   col_common <- quote_all(rand_id, date, .source_dir)
   
   exp_data_names_new <- c(exp_data_names, "nox")
@@ -114,12 +168,11 @@ mean(salsa_data_04212016$dcst, na.rm = TRUE)
         dplyr::mutate(value = extreme_remove_percentile_win(value)) # winsorize the extreme values
     }) |> 
     purrr::list_rbind() |> 
-    dplyr::left_join(salsa_data_04212016 |> 
-                select(rand_id, enrollment), by = "rand_id") |>
-    dplyr::mutate(baseline_year = lubridate::year(enrollment),
+    dplyr::left_join(salsa_clean_long |> 
+                select(rand_id, blood_date), by = "rand_id") |>
+    dplyr::mutate(blood_year = lubridate::year(blood_date),
                   year = lubridate::year(date)) |>
-    dplyr::filter(year >= baseline_year - 5 | 
-                    toxicant == "nox") |>
+    dplyr::filter(year >= blood_year - 5) |>
     dplyr::group_by(rand_id, toxicant) |> 
     dplyr::summarize(
       avg_exp = mean(value, na.rm = TRUE),
@@ -136,9 +189,14 @@ mean(salsa_data_04212016$dcst, na.rm = TRUE)
 
 }
 
-cor(air_toxicants_avg_ztrans %>% 
-      select(-rand_id),
-    use = "complete.obs")
+# make a heatmap for exposure correlations
+heatmap(
+  cor(air_toxicants_avg_ztrans %>% 
+        select(-rand_id),
+      use = "complete.obs")
+)
+
+
 
 ### get the 1- 10-yr mean exposure prior to baseline for each air toxicant 
 # {
@@ -231,7 +289,8 @@ cor(air_toxicants_avg_ztrans %>%
 #   ) 
 # 
 # # obviously, the nox_iqr_check_2002 is different from the nox_iqr in salsa2_ap
-# # and it doesn't make sense to use only 2002 data to calculate the IQR for the entire study period
+# # and it doesn't make sense to use only 2002 data to calculate the IQR for the 
+# # entire study period
 # 
 # ### calculate the yearly average nox exposure from caline data up to enrollment date
 # caline_nox_long <- salsa2_ap |>

@@ -44,11 +44,12 @@ list(
 ) |> 
   purrr::pmap(function(data1, data2){
     salsa_clean |>
-      dplyr::mutate(rand_id = as.character(rand_id)) |>
-      dplyr::left_join(salsa_id |>
-                         dplyr::mutate(rand_id = as.character(rand_id),
-                                       id = as.character(id)), 
-                       by = "rand_id") |>
+      dplyr::mutate(rand_id = as.character(rand_id),
+                    id = as.character(id)) |>
+      # dplyr::left_join(salsa_id |>
+      #                    dplyr::mutate(rand_id = as.character(rand_id),
+      #                                  id = as.character(id)), 
+      #                  by = "rand_id") |>
       dplyr::inner_join(
         data1 |>
           dplyr::rename_all(str_to_lower) |>
@@ -101,23 +102,25 @@ print(table(rownames(covar_hilic) == colnames(metabolome_hilic)))
 ##   - automaticWeights = "bicov": use biweight midcorrelation for robust weighting
 ##   - aw.maxPOutliers = 0.01: maximum proportion of outliers
 
+system.time({
+  list(
+    list("C18", "HILIC"),
+    list(metabolome_c18, metabolome_hilic),
+    list(covar_c18, covar_hilic)
+  ) |>
+    purrr::pmap(function(mode, metabo, covar){
+      message(paste0("Running empirical Bayes linear model for ", mode, "..."))
+      WGCNA::empiricalBayesLM(
+        data = t(metabo),
+        removedCovariates = covar,
+        automaticWeights = "bicov",
+        aw.maxPOutliers = 0.01
+      )
+    }) |>
+    set_names("metabolome_residual_c18", "metabolome_residual_hilic") |>
+    list2env(.,envir = .GlobalEnv)
+})
 
-list(
-  list("C18", "HILIC"),
-  list(metabolome_c18, metabolome_hilic),
-  list(covar_c18, covar_hilic)
-) |>
-  purrr::pmap(function(mode, metabo, covar){
-    message(paste0("Running empirical Bayes linear model for ", mode, "..."))
-    WGCNA::empiricalBayesLM(
-      data = t(metabo),
-      removedCovariates = covar,
-      automaticWeights = "bicov",
-      aw.maxPOutliers = 0.01
-    )
-  }) |>
-  set_names("metabolome_residual_c18", "metabolome_residual_hilic") |>
-  list2env(.,envir = .GlobalEnv)
 
 
 
@@ -160,11 +163,12 @@ list(
 ) |>
   pmap(function(mapping, metabo_residual){
     salsa_clean |>
-      dplyr::mutate(rand_id = as.character(rand_id)) |>
-      dplyr::left_join(salsa_id |>
-                         dplyr::mutate(rand_id = as.character(rand_id),
-                                       id = as.character(id)), 
-                       by = "rand_id") |>
+      dplyr::mutate(rand_id = as.character(rand_id),
+                    id = as.character(id)) |>
+      # dplyr::left_join(salsa_id |>
+      #                    dplyr::mutate(rand_id = as.character(rand_id),
+      #                                  id = as.character(id)), 
+      #                  by = "rand_id") |>
       dplyr::inner_join(
         mapping |>
           dplyr::rename_all(str_to_lower) |>
@@ -203,9 +207,9 @@ list(
   list("c18", "hilic")
 ) |>
   pmap(function(data, mode){
-    save(data1,
+    save(data,
          file = here::here("data", "metabolomics", "processed",
-                           paste0("combined_residual_", mode, ".Rdata")))
+                           paste0("combined_residual_", mode, ".RData")))
     message(paste0("Residual matrices for ", mode, " saved successfully!"))
   }) |>
   invisible()

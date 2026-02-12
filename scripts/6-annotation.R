@@ -64,6 +64,80 @@ load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
 load(here::here("data", "processed",  "metabolomics_met_link.RData"))
 
 
+# xMSannotator ------------------------------------------------------------
+library(xMSannotator)
+
+list(
+  list(c18_mz_rt_link_mz_links, hil_mz_rt_link_mz_links),
+  list(med_c18_raw_combat_processed, med_hil_raw_combat_processed)
+) |> 
+  purrr::pmap(function(mz_rt_link, med_data){
+    med_data |> 
+      tibble::rownames_to_column("mz_rt") |> 
+      dplyr::inner_join(mz_rt_link, by = "mz_rt") |>
+      dplyr::relocate(mz, time, .after = mz_rt) |>
+      dplyr::select(-mz_rt)
+  }) |> 
+  purrr::set_names("tbl_feature_c18", "tbl_feature_hilic") |>
+  list2env(.GlobalEnv)
+
+data(adduct_table)
+data(adduct_weights)
+
+# create directories for annotation from xMSannotator output
+list("c18", "hilic") |> 
+  purrr::map(function(mode){
+    list("HMDB", "KEGG", "LipidMaps") |> 
+      purrr::map(function(db){
+        dir <- here::here("annotation", mode, db)
+        if (!dir.exists(dir)) {
+          dir.create(dir, recursive = TRUE)
+          message(paste0("Directory created: ", dir))
+        } else {
+          message(paste0("Directory already exists: ", dir))
+        }
+      })
+  }) |> 
+  invisible()
+
+# need to fix namespace for this package
+list(
+  list(tbl_feature_c18, tbl_feature_hilic),
+  list("neg", "pos"),
+  list("c18", "hilic"),
+  list(
+    c("M-H","M-H2O-H","M+Na-2H","M+Cl","M+FA-H"),
+    c("M+2H","M+H+NH4","M+ACN+2H","M+2ACN+2H","M+H","M+NH4","M+Na","M+ACN+H",
+      "M+ACN+Na","M+2ACN+H","2M+H","2M+Na","2M+ACN+H","M+2Na-H","M+H-H2O",
+      "M+H-2H2O")
+  ),
+  list(c("M-H"), c("M+H"))
+) |> 
+  purrr::pmap(function(feature_tbl, mode, mode_name, adductlist, filter_adduct){
+    list("HMDB", "KEGG", "LipidMaps") |> 
+      purrr::map(function(db){
+        xMSannotator::multilevelannotation(
+          feature_tbl,
+          max.mz.diff = 10, max.rt.diff = 37, 
+          num_nodes = 16,
+          # queryadductlist = c("M-H", "M-2H", "M-H2O-H"),
+          queryadductlist = adductlist,
+          filter.by = filter_adduct,
+          adduct_weights = adduct_weights,
+          mode = mode,
+          # DB to search
+          db_name = db,
+          # biofluid.location = "Blood",
+          # other parameters
+          num_sets = 300,
+          # output directory
+          outloc = here::here("annotation", mode_name, db)
+        )
+      })
+  })
+
+
+
 # check if there are overlap metabolite features within the inhouse library
 
 list(
