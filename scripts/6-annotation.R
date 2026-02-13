@@ -27,6 +27,10 @@ library(tidyverse)
 library(writexl)
 
 
+
+# Load required datasets --------------------------------------------------
+
+
 # Load annotation files (m/z and retention time)
 # These should contain: chemical_ID, mz, time (retention time)
 annotation_c18 <- read_csv(
@@ -101,6 +105,15 @@ list("c18", "hilic") |>
   invisible()
 
 # need to fix namespace for this package
+# 1. replace "if (queryadductlist == "all" & mode == "pos") {"
+# with "if (is.character(queryadductlist) && length(queryadductlist) == 1 &&
+# queryadductlist == "all" && mode == "pos") {" also do it for "neg"
+# 2. replace "get_peak_blocks_modulesvhclust" with "xMSannotator:::get_peak_blocks_modulesvhclust"
+
+get("multilevelannotation", asNamespace("xMSannotator"))
+
+num_nodes = 10
+# takes ~ 4 hours to run (M3 pro chip)
 list(
   list(tbl_feature_c18, tbl_feature_hilic),
   list("neg", "pos"),
@@ -119,9 +132,9 @@ list(
         xMSannotator::multilevelannotation(
           feature_tbl,
           max.mz.diff = 10, max.rt.diff = 37, 
-          num_nodes = 16,
+          num_nodes = 10,
           # queryadductlist = c("M-H", "M-2H", "M-H2O-H"),
-          queryadductlist = adductlist,
+          queryadductlist = adductlist, 
           filter.by = filter_adduct,
           adduct_weights = adduct_weights,
           mode = mode,
@@ -136,6 +149,18 @@ list(
       })
   })
 
+
+# Load stage 5 tables from xMSannotator output ----------------------------
+annotation_names <- list.dirs(here::here("annotation"), recursive = FALSE) |>
+  list.files(pattern = "\\.(csv)$", 
+             full.names = TRUE, recursive = TRUE) |>
+  keep(~ str_detect(.x, "Stage5")) |>
+  (\(files) {
+    files |>
+      stringr::str_extract("[^/]+$") |>         # extract file name from full path
+      stringr::str_remove("\\.[^.]+$") |>       # remove file extension
+      stringr::str_to_lower()                   # convert to lower case
+  })()
 
 
 # check if there are overlap metabolite features within the inhouse library
