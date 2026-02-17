@@ -29,12 +29,15 @@ library(limma)
 library(mixOmics)
 library(tidyverse)
 library(writexl)
+library(future)
+library(furrr)
 
 # Load residualized metabolomics data ----------------------------------------
 
 load(here::here("data", "metabolomics", "processed", "combined_residual_c18.RData"))
 load(here::here("data", "metabolomics", "processed", "combined_residual_hilic.RData"))
 load(here::here("data", "links", "processed", "Sample_links.RData"))
+load(here::here("data", "processed", "air_toxicants_exposure.RData"))
 
 # Prepare exposure data for MWAS ---------------------------------------------
 
@@ -90,8 +93,8 @@ print(exposure_vars)
 
 ## Function to create design matrix for a single exposure
 create_design_matrix <- function(exposure_data, exposure_var) {
-  exp_values <- exposure_data[[exposure_var]]
-  model.matrix(~ exp_values)
+  formula_matrix <- as.formula(str_c("~ ", exposure_var))
+  model.matrix(formula_matrix, data = exposure_data)
 }
 
 ## Create design matrices for all exposures - C18
@@ -105,11 +108,43 @@ list(exposure_c18, exposure_hilic) |>
   list2env(.GlobalEnv)
 
 
+# Estimate within-subject correlation for duplicate measures -------------------
+
+## Set up parallel backend
+n_workers <- parallelly::availableCores() - 1
+message(paste0("Setting up parallel plan with ", n_workers, " workers..."))
+plan(multisession, workers = n_workers)
+
+system.time({
+  list(
+    list("C18", "HILIC"),
+    list(combined_residual_c18, combined_residual_hilic),
+    list(design_c18_list, design_hilic_list),
+    list(exposure_c18, exposure_hilic)
+  ) |>
+    purrr::pmap(function(mode, metabo_residual, design_list, exposure_data) {
+      message(paste0("Calculating correlations for ", mode, "..."))
+      block <- exposure_data$rand_id
+      stopifnot(
+        length(block) == ncol(metabo_residual),
+        all(exposure_data$file.name_new == colnames(metabo_residual)))
+      design_list |>
+        furrr::future_map(function(design) {
+          limma::duplicateCorrelation(metabo_residual, design, block = block)
+        }, .options = furrr_options(seed = TRUE))
+    }) |>
+    purrr::set_names("dupcor_c18_list", "dupcor_hilic_list") |>
+    list2env(.GlobalEnv)
+})
+
+
+
 # Fit limma models -----------------------------------------------------------
 
-## Function to fit limma model
-fit_limma <- function(metabolome_matrix, design_matrix) {
-  fit <- limma::lmFit(metabolome_matrix, design_matrix)
+## Function to fit limma model with duplicate correlation
+fit_limma <- function(metabolome_matrix, design_matrix, block, correlation) {
+  fit <- limma::lmFit(metabolome_matrix, design_matrix,
+                      block = block, correlation = correlation)
   fit <- limma::eBayes(fit)
   return(fit)
 }
@@ -117,16 +152,40 @@ fit_limma <- function(metabolome_matrix, design_matrix) {
 list(
   list("C18", "HILIC"),
   list(design_c18_list, design_hilic_list),
-  list(combined_residual_c18, combined_residual_hilic)
+  list(combined_residual_c18, combined_residual_hilic),
+  list(dupcor_c18, dupcor_hilic),
+  # list(dupcor_c18_list, dupcor_hilic_list),
+  list(exposure_c18, exposure_hilic)
 ) |>
-  purrr::pmap(function(mode, design_list, metabo_residual){
+  purrr::pmap(function(mode, design_list, metabo_residual,
+                        dupcor, exposure_data) {
     message(paste0("Fitting limma models for ", mode, "..."))
-    limma_fits <- design_list |>
-      purrr::map(~ fit_limma(metabo_residual, .x))
+    block <- exposure_data$rand_id
+    
+    design_list |>
+      purrr::map(function(design) {
+        fit_limma(metabo_residual, design,
+                  block = block,
+                  correlation = dupcor$consensus.correlation)
+      })
+    # list(design_list, dupcor_list) |>
+    #   furrr::future_pmap(function(design, dupcor) {
+    #     fit_limma(metabo_residual, design,
+    #               block = block,
+    #               correlation = dupcor$consensus.correlation)
+    #   }, .options = furrr_options(seed = TRUE))
   }) |>
   purrr::set_names("limma_fit_c18", "limma_fit_hilic") |>
   list2env(.GlobalEnv)
 
+## Reset to sequential plan
+plan(sequential)
+
+save(limma_fit_c18, file = here::here("data", "metabolomics", 
+                                      "results", "limma_fit_c18.RData"))
+
+save(limma_fit_hilic, file = here::here("data", "metabolomics", 
+                                       "results", "limma_fit_hilic.RData"))
 
 # Extract MWAS results -------------------------------------------------------
 
@@ -338,41 +397,9 @@ significant_c18 <- filter_significant(combined_results_c18)
 significant_hilic <- filter_significant(combined_results_hilic)
 
 
-# =============================================================================
-# SECTION 4: PREPARE MUMMICHOG INPUT FOR PATHWAY ANALYSIS
-# =============================================================================
-
-# Load annotation data -------------------------------------------------------
-
-## Load metabolite annotation files (m/z, retention time, etc.)
-# annotation_c18 <- read_csv(here::here("data", "metabolomics", "annotation",
-#                                        "xmsannotator_c18neg.csv"))
-# annotation_hilic <- read_csv(here::here("data", "metabolomics", "annotation",
-#                                          "xmsannotator_hilicpos.csv"))
-
-
-# Function to create Mummichog input -----------------------------------------
-
-create_mummichog_input <- function(mwas_result, annotation_df, mode) {
-  mwas_result |>
-    tibble::rownames_to_column("met") |>
-    dplyr::left_join(annotation_df |>
-                       dplyr::select(met = chemical_ID, mz, time),
-                     by = "met") |>
-    dplyr::transmute(
-      `m.z` = mz,
-      `rt` = time,
-      `p.value` = P.Value,
-      `t.score` = t,
-      mode = mode
-    ) |>
-    dplyr::filter(!is.na(`m.z`)) |>
-    dplyr::arrange(`p.value`)
-}
-
 
 # =============================================================================
-# SECTION 5: SAVE RESULTS
+# SECTION 4: SAVE RESULTS
 # =============================================================================
 
 # Create output directories --------------------------------------------------
@@ -437,7 +464,7 @@ message("MWAS analysis completed! Results saved to tables/mwas_results/")
 
 
 # =============================================================================
-# SECTION 6: SUMMARY TABLE
+# SECTION 5: SUMMARY TABLE
 # =============================================================================
 
 # Create summary table for all exposures -------------------------------------

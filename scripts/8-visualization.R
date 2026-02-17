@@ -69,7 +69,7 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
     ) |>
     dplyr::left_join(
       annotation_result |>
-        dplyr::select(met, chemical_id, chemical_name, reference),
+        dplyr::select(met, chemical_id, compound, multiple_match, reference),
       by = "met"
     ) |>
     dplyr::group_by(met) |>
@@ -78,10 +78,8 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
     dplyr::mutate(
       neg_log10_p = -log10(P.Value),
       significant = case_when(
-        adj.P.Val < fdr_threshold & VIP > vip_threshold & logFC > 0 ~ "Up & VIP>2",
-        adj.P.Val < fdr_threshold & VIP > vip_threshold & logFC < 0 ~ "Down & VIP>2",
-        adj.P.Val < fdr_threshold & logFC > 0 ~ "Up",
-        adj.P.Val < fdr_threshold & logFC < 0 ~ "Down",
+        adj.P.Val < fdr_threshold & VIP > vip_threshold ~ "FDR < 0.05 & VIP>2",
+        adj.P.Val < fdr_threshold & logFC ~ "FDR < 0.05 only",
         VIP > vip_threshold ~ "VIP>2 only",
         TRUE ~ "NS"
       )
@@ -90,7 +88,8 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
   # Get top metabolites for labeling (by VIP or p-value)
   top_mets <- plot_data |>
     dplyr::filter(
-      is.finite(VIP), !is.na(chemical_name), chemical_name != "",
+      is.finite(VIP), !is.na(compound), 
+      multiple_match == FALSE | reference == "In House Library", compound != "",
       adj.P.Val < fdr_threshold | VIP > vip_threshold) |>
     # dplyr::arrange(P.Value) |>
     # dplyr::slice_head(n = n_labels) |>
@@ -98,7 +97,7 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
     dplyr::pull(met)
 
   plot_data <- plot_data |>
-    dplyr::mutate(label = ifelse(met %in% top_mets, chemical_name, ""))
+    dplyr::mutate(label = ifelse(met %in% top_mets, compound, ""))
 
   # Create volcano plot
   p <- ggplot(plot_data, aes(x = logFC, y = neg_log10_p)) +
@@ -118,10 +117,8 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
     ) +
     scale_color_manual(
       values = c(
-        "Up & VIP>2" = "#E41A1C",
-        "Down & VIP>2" = "#377EB8",
-        "Up" = "#FB9A99",
-        "Down" = "#A6CEE3",
+        "FDR < 0.05 & VIP>2" = "#FB9A99",
+        "FDR < 0.05 only" = "#FDB462",
         "VIP>2 only" = "#984EA3"
       ),
       name = "Significance"
@@ -238,7 +235,7 @@ create_vip_scatter <- function(mwas_result, vip_result, annotation_result,
     ) |>
     dplyr::left_join(
       annotation_result |>
-        dplyr::select(met, chemical_id, chemical_name, reference),
+        dplyr::select(met, chemical_id, compound, multiple_match, reference),
       by = "met"
     ) |>
     dplyr::group_by(met) |>
@@ -255,7 +252,9 @@ create_vip_scatter <- function(mwas_result, vip_result, annotation_result,
   # Top metabolites for labeling
   top_mets <- plot_data |>
     dplyr::filter(
-      is.finite(VIP), !is.na(chemical_name), chemical_name != "",
+      is.finite(VIP), !is.na(compound), 
+      multiple_match == FALSE | reference == "In House Library",
+      compound != "",
       VIP > vip_threshold) |>
     # dplyr::arrange(P.Value) |>
     # dplyr::slice_head(n = n_labels) |>
@@ -263,7 +262,7 @@ create_vip_scatter <- function(mwas_result, vip_result, annotation_result,
     dplyr::pull(met)
   
   plot_data <- plot_data |>
-    dplyr::mutate(label = ifelse(met %in% top_mets, chemical_name, ""))
+    dplyr::mutate(label = ifelse(met %in% top_mets, compound, ""))
   
 
 
@@ -387,7 +386,7 @@ create_combined_panel <- function(exposure_name) {
 
   # Combine with patchwork
   combined <- (p1 | p2) / (p3 | p4) +
-    plot_annotation(
+    patchwork::plot_annotation(
       title = paste0("MWAS Results: ", gsub("exp_", "", exposure_name)),
       theme = theme(
         plot.title = element_text(face = "bold", size = 16, hjust = 0.5)
@@ -463,7 +462,7 @@ create_sig_heatmap <- function(combined_results_list, column_type = "C18",
   # Create heatmap
   pheatmap::pheatmap(
     heatmap_data,
-    color = colorRampPalette(rev(brewer.pal(11, "RdBu")))(100),
+    color = colorRampPalette(rev(RColorBrewer::brewer.pal(11, "RdBu")))(100),
     cluster_rows = TRUE,
     cluster_cols = TRUE,
     show_rownames = TRUE,

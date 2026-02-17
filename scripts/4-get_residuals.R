@@ -201,18 +201,14 @@ list(
 # Save residual data ---------------------------------------------------------
 
 ## Save residualized metabolomics and link data for downstream MWAS analysis
-list(
-  list(combined_residual_c18,
-       combined_residual_hilic),
-  list("c18", "hilic")
-) |>
-  pmap(function(data, mode){
-    save(data,
-         file = here::here("data", "metabolomics", "processed",
-                           paste0("combined_residual_", mode, ".RData")))
-    message(paste0("Residual matrices for ", mode, " saved successfully!"))
-  }) |>
-  invisible()
+
+save(combined_residual_c18, 
+     file = here::here("data", "metabolomics", "processed",
+                       "combined_residual_c18.Rdata"))
+
+save(combined_residual_hilic, 
+     file = here::here("data", "metabolomics", "processed",
+                       "combined_residual_hilic.Rdata"))
 
 
 save(sample_link_c18, sample_link_hilic,

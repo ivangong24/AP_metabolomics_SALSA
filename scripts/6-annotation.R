@@ -155,99 +155,261 @@ annotation_names <- list.dirs(here::here("annotation"), recursive = FALSE) |>
   list.files(pattern = "\\.(csv)$", 
              full.names = TRUE, recursive = TRUE) |>
   keep(~ str_detect(.x, "Stage5")) |>
+  # extract the mode and database from the file path
   (\(files) {
     files |>
-      stringr::str_extract("[^/]+$") |>         # extract file name from full path
-      stringr::str_remove("\\.[^.]+$") |>       # remove file extension
-      stringr::str_to_lower()                   # convert to lower case
+      #remove the directory and file extension
+      str_extract("[^/]+/[^/]+/Stage5") |>
+      #replace "/" to "_"
+      str_replace_all("/", "_")
   })()
+  
 
-
-# check if there are overlap metabolite features within the inhouse library
-
-list(
-  list(c18_mz_rt_link, hil_mz_rt_link),
-  list(inhouse_c18, inhouse_hilic)
-) %>% 
-  purrr::pmap(function(mz_rt_link, inhouse_df){
-    list(mz_rt_link, inhouse_df) %>% 
-      purrr::map(function(df){
-        df %>% 
-          dplyr::mutate(mz3 = round(mz, 3))
-      }) %>% 
-      purrr::reduce(inner_join, by = "mz3")
-  }) %>% 
-  set_names("inhouse_c18_overlap", "inhouse_hilic_overlap") %>%
+list.dirs(here::here("annotation"), recursive = FALSE) |>
+  list.files(pattern = "\\.(csv)$", full.names = TRUE, recursive = TRUE) |>
+  keep(~ str_detect(.x, "Stage5")) |>
+  purrr::map(read_file) |> 
+  purrr::map(~rename_all(.x, str_to_lower)) |> 
+  purrr::set_names(annotation_names) |> 
   list2env(.GlobalEnv)
 
-# create final annotation dataframes
 
+# Matched feature tables -------------------------------------------------------
+
+# Function to calculate ppm mass error
+ppm <- function(theo_mz, obs_mz) {
+  ((obs_mz - theo_mz) / theo_mz) * 1e6
+}
+
+# Match features against inhouse library
+matchInhouse <- function(id, mzr, rt, inhouse_tbl, name_col) {
+  tbl <- inhouse_tbl |>
+    dplyr::filter(abs(ppm(round(mz, 3), round(mzr, 3))) <= 10) |>
+    dplyr::filter(abs(time - rt) <= 30)
+
+  if (nrow(tbl) == 0) {
+    tibble(id = id, mz = mzr, rt = rt,
+           match_chemical = "", hmdbid = "", keggid = "")
+  } else {
+    tibble(id = id, mz = tbl$mz, rt = tbl$time,
+           match_chemical = tbl[[name_col]],
+           hmdbid = tbl$ID, keggid = tbl$KEGGID)
+  }
+}
+
+# Match features against xMSannotator Stage 5 results
+matchAnnotator <- function(id, mzr, rt, stage5_tbl) {
+  tbl <- stage5_tbl |>
+    dplyr::filter(abs(ppm(round(mz, 3), round(mzr, 3))) <= 10) |>
+    dplyr::filter(abs(time - rt) <= 30) |>
+    dplyr::rename(match_chemical = name, rt = time) |>
+    dplyr::select(mz, rt, match_chemical, chemical_id, confidence, score)
+
+  if (nrow(tbl) == 0) {
+    tibble(id = id, mz = mzr, rt = rt,
+           match_chemical = "", chemical_id = "",
+           confidence = NA_real_, score = NA_real_)
+  } else {
+    tbl |> dplyr::mutate(id = id) |> dplyr::relocate(id)
+  }
+}
+
+# Inhouse library matched tables
 list(
-  list(annotation_c18, annotation_hilic),
+  list(c18_mz_rt_link_mz_links, hil_mz_rt_link_mz_links),
   list(inhouse_c18, inhouse_hilic),
-  list(met_c18, met_hilic)
+  list("C18_name", "HILIC_name")
 ) |>
-  purrr::pmap(function(annot_df, inhouse_df, met_df){
-    list(
-      list(annot_df |> 
-             dplyr::rename(confidence_level = Annotation.confidence.score) |>
-             dplyr::filter(confidence_level >= 2), 
-           inhouse_df),
-      list("xmsannotator", "inhouse")
-    ) |>
-      purrr::pmap(function(df, ref){
-        df |>
-          dplyr::rename_all(str_to_lower) |>
-          dplyr::rename(
-            chemical_id = any_of(matches("hmdbid")),
-            chemical_name = any_of(matches("name"))
-          ) |>
-          dplyr::mutate(met = str_c("mz_rt", round(mz, 4), 
-                                    round(time, 4), sep = "_"),
-                        reference = ref) |>
-          dplyr::select(met, mz, time, chemical_id, chemical_name, reference)
-      }) |>
+  purrr::pmap(function(mz_link, inhouse_tbl, name_col) {
+    lapply(seq_len(nrow(mz_link)), function(i) {
+      matchInhouse(
+        id = mz_link$mz_rt[i],
+        mzr = mz_link$mz[i],
+        rt = mz_link$time[i],
+        inhouse_tbl = inhouse_tbl,
+        name_col = name_col
+      )
+    }) |>
       dplyr::bind_rows() |>
-      dplyr::left_join(met_df, by = "met") |>
-      dplyr::distinct()
+      dplyr::filter(match_chemical != "")
   }) |>
-  purrr::set_names("met_c18_all", "met_hilic_all") |>
+  purrr::set_names("inhouse_c18_matched", "inhouse_hilic_matched") |>
   list2env(.GlobalEnv)
 
+# xMSannotator Stage 5 matched tables
 list(
-  list(met_c18_all, met_hilic_all),
-  list(inhouse_c18_overlap, inhouse_hilic_overlap)
-) |> 
-  purrr::pmap(function(data1, data2){
-    data1 |> 
-      dplyr::mutate(reference = if_else(met_new %in% data2$mz_rt, 
-                                 "inhouse", reference)) |>
-      dplyr::select(-met) |>
-      dplyr::rename(met = met_new) |>
-      dplyr::relocate(met) |>
-      dplyr::filter(!is.na(met))
-  }) %>%
-  purrr::set_names("met_c18_final", "met_hilic_final") |>
+  list(c18_mz_rt_link_mz_links, hil_mz_rt_link_mz_links),
+  list("c18", "hilic")
+) |>
+  purrr::pmap(function(mz_link, mode) {
+    list("HMDB", "KEGG", "LipidMaps") |>
+      purrr::map(function(db) {
+        stage5_tbl <- get(paste0(mode, "_", db, "_Stage5"))
+
+        lapply(seq_len(nrow(mz_link)), function(i) {
+          matchAnnotator(
+            id = mz_link$mz_rt[i],
+            mzr = mz_link$mz[i],
+            rt = mz_link$time[i],
+            stage5_tbl = stage5_tbl
+          )
+        }) |>
+          dplyr::bind_rows() |>
+          dplyr::filter(match_chemical != "")
+      }) |>
+      purrr::set_names(paste0(mode, "_", c("HMDB", "KEGG", "LipidMaps"), "_matched"))
+  }) |>
+  purrr::list_flatten() |>
   list2env(.GlobalEnv)
 
-# Link to MWAS results
+# Save full matched tables
+save(
+  inhouse_c18_matched, inhouse_hilic_matched,
+  c18_HMDB_matched, c18_KEGG_matched, c18_LipidMaps_matched,
+  hilic_HMDB_matched, hilic_KEGG_matched, hilic_LipidMaps_matched,
+  file = here::here("annotation", "full_matched_tables.RData")
+)
+
+
+# Clean annotation -------------------------------------------------------------
+
+load(here::here("data", "metabolomics", 
+                "annotation", "full_matched_tables.RData"))
+
+# Rank annotation: select best match per feature by score, then confidence,
+# then database priority (HMDB > KEGG > LIPID MAPS)
+rank_annotation <- function(tbl, feature_id) {
+  tbl_subset <- tbl |> dplyr::filter(id == feature_id)
+  max_score <- max(tbl_subset$score)
+  if (sum(tbl_subset$score == max_score) == 1) {
+    return(tbl_subset |> dplyr::filter(score == max_score))
+  }
+
+  max_confidence <- max(tbl_subset$confidence)
+  tbl_subset <- tbl_subset |> dplyr::filter(confidence == max_confidence)
+
+  if (any(tbl_subset$reference == "HMDB")) {
+    return(tbl_subset |> dplyr::filter(reference == "HMDB"))
+  }
+  if (any(tbl_subset$reference == "KEGG")) {
+    return(tbl_subset |> dplyr::filter(reference == "KEGG"))
+  }
+  return(tbl_subset)
+}
+
+# Clean and rank annotations for each mode (c18, hilic)
+cleaned <- list(
+  list("c18", "hilic"),
+  list(inhouse_c18_matched, inhouse_hilic_matched),
+  list(c18_HMDB_matched, hilic_HMDB_matched),
+  list(c18_KEGG_matched, hilic_KEGG_matched),
+  list(c18_LipidMaps_matched, hilic_LipidMaps_matched)
+) |>
+  purrr::pmap(function(mode, inhouse_matched, hmdb_matched,
+                        kegg_matched, lipidmaps_matched) {
+    # Filter xMSannotator matches by confidence >= 2
+    hmdb_filtered <- hmdb_matched |> dplyr::filter(confidence >= 2)
+    kegg_filtered <- kegg_matched |> dplyr::filter(confidence >= 2)
+    lipidmaps_filtered <- lipidmaps_matched |> dplyr::filter(confidence >= 2)
+
+    # Inhouse wide table: collapse matches per feature
+    inhouse_wide <- inhouse_matched |>
+      dplyr::select(id, match_chemical, hmdbid) |>
+      dplyr::group_by(id) |>
+      dplyr::reframe(
+        compound = paste(match_chemical, collapse = "; "),
+        chemical_id = paste(hmdbid, collapse = "; "),
+        multiple_match = (dplyr::n() > 1)
+      ) |>
+      dplyr::ungroup() |>
+      dplyr::mutate(reference = "In House Library",
+                    confidence = NA)
+
+    # Combine xMSannotator matches with database labels
+    xms_long <- dplyr::bind_rows(
+      hmdb_filtered |> dplyr::mutate(reference = "HMDB"),
+      kegg_filtered |> dplyr::mutate(reference = "KEGG"),
+      lipidmaps_filtered |> dplyr::mutate(reference = "LIPID MAPS")
+    )
+
+    # Rank and deduplicate annotations
+    xms_long <- lapply(unique(xms_long$id), function(x) {
+      rank_annotation(xms_long, x)
+    }) |>
+      dplyr::bind_rows() |>
+      dplyr::distinct()
+
+    # xMSannotator wide table: collapse per feature
+    xms_wide <- xms_long |>
+      dplyr::select(id, match_chemical, chemical_id, 
+                    reference, confidence) |>
+      dplyr::group_by(id) |>
+      dplyr::reframe(
+        compound = paste(match_chemical, collapse = "; "),
+        chemical_id = paste(chemical_id, collapse = "; "),
+        multiple_match = (dplyr::n() > 1),
+        reference = unique(reference),
+        confidence = unique(confidence)
+      )
+
+    # Combined wide: inhouse takes priority over xMSannotator
+    wide <- dplyr::bind_rows(
+      inhouse_wide,
+      xms_wide |> dplyr::filter(!id %in% inhouse_wide$id)
+    )
+
+    list(xms_long = xms_long, wide = wide)
+  }) |>
+  purrr::set_names("c18", "hilic")
+
+# Extract cleaned results
+xms_c18_long <- cleaned$c18$xms_long
+xms_hilic_long <- cleaned$hilic$xms_long
+annotation_c18_wide <- cleaned$c18$wide
+annotation_hilic_wide <- cleaned$hilic$wide
+
+# Save cleaned annotation tables
+save(
+  inhouse_c18_matched, inhouse_hilic_matched,
+  xms_c18_long, xms_hilic_long,
+  file = here::here("data", "metabolomics", 
+                    "annotation", "annotation_cleaned_long.RData")
+)
+
+save(
+  annotation_c18_wide, annotation_hilic_wide,
+  file = here::here("data", "metabolomics", 
+                    "annotation", "annotation_cleaned_wide.RData")
+)
+
+
+# Link to MWAS results ---------------------------------------------------------
+
+load(here::here("data", "metabolomics", 
+                "annotation", "annotation_cleaned_long.RData"))
+
+load(here::here("data", "metabolomics", 
+                "annotation", "annotation_cleaned_wide.RData"))
 
 list(
-  list(met_c18_final, met_hilic_final),
+  list(annotation_c18_wide, annotation_hilic_wide),
   list(significant_c18, significant_hilic),
   list("c18", "hilic")
 ) |>
-  purrr::pmap(function(met_df, sig_mwas_df_list, mode){
+  purrr::pmap(function(annot_wide, sig_mwas_df_list, mode) {
     sig_mwas_df_list |>
-      purrr::map(function(df){
+      purrr::map(function(df) {
         df |>
-          dplyr::left_join(met_df |> 
-                             dplyr::select(-c(mz, time)),
-                           by = "met")
+          dplyr::left_join(annot_wide, by = c("met" = "id"))
       })
   }) |>
-  set_names("mwas_c18_annotated", "mwas_hilic_annotated") |>
+  purrr::set_names("mwas_c18_annotated", "mwas_hilic_annotated") |>
   list2env(.GlobalEnv)
+
+
+
+
+
 
 
 # Save annotated MWAS results -------------------------------------------------
@@ -256,16 +418,16 @@ list(
   list(mwas_c18_annotated, mwas_hilic_annotated),
   list("c18", "hilic")
 ) |>
-  purrr::pmap(function(df_list, mode){
-    df_list %>% 
-      purrr::imap(function(df, exp_name){
-        df %>%
+  purrr::pmap(function(df_list, mode) {
+    df_list |>
+      purrr::imap(function(df, exp_name) {
+        df |>
           writexl::write_xlsx(
-            here::here("tables", "mwas_results", 
+            here::here("tables", "mwas_results",
                        glue::glue("mwas_{mode}_{exp_name}_sig_annotated.xlsx"))
           )
-        message(paste0("MWAS results with annotation for ", 
-                       exp_name, " ", mode, 
+        message(paste0("MWAS results with annotation for ",
+                       exp_name, " ", mode,
                        " saved successfully!"))
       })
   })
@@ -273,7 +435,7 @@ list(
 
 # Save R objects for downstream analysis -------------------------------------
 
-save(mwas_c18_annotated, mwas_hilic_annotated, 
+save(mwas_c18_annotated, mwas_hilic_annotated,
      file = here::here("data", "metabolomics", "processed",
                        "mwas_annotation.RData"))
 
