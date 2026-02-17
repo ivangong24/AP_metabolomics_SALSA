@@ -735,7 +735,7 @@ read_pathway_file <- function(file_path) {
       pathway_size = any_of(c("pathway total", "pathway_total", "total")),
       hits_total = any_of(c("hits.total", "hits_total", "total_hits")),
       hits_sig = any_of(c("hits.sig", "hits_sig", "sig_hits")),
-      p_value = any_of(c("p(fisher)", "p.value", "pvalue", "p_value", "fisher_p"))
+      p_value = any_of(c("p(fisher)", "p.value", "pvalue", "p_value"))
     )
 
   # Add exposure info
@@ -756,9 +756,10 @@ if (length(pathway_files) > 0) {
 
   if (nrow(pathway_all) > 0) {
 
-    # Filter significant pathways
+    # Filter significant pathways (drop zinc and o3)
     pathway_sig <- pathway_all |>
       dplyr::filter(p_value < 0.05) |>
+      dplyr::filter(!str_detect(exposure, regex("zinc|o3", ignore_case = TRUE))) |>
       dplyr::arrange(p_value)
 
     # Save significant pathways to Excel
@@ -846,19 +847,19 @@ if (length(pathway_files) > 0) {
         )
 
 
-      # Create barplot of pathway counts by exposure
-      pathway_barplot <- pathway_plot_data |>
-        ggplot() +
-        geom_bar(
-          aes(y = pathway_name, fill = exposure_clean),
-          stat = "count",
-          width = 0.9
+      # Create scatter plot of pathway enrichment by exposure
+      pathway_scatter <- pathway_plot_data |>
+        ggplot(aes(x = -log10(p_value), y = pathway_name)) +
+        geom_point(
+          aes(size = hits_sig, color = exposure_clean),
+          alpha = 0.7
         ) +
-        scale_fill_tableau("Tableau 10") +
+        scale_size_continuous(range = c(2, 8), name = "Hits (sig)") +
+        scale_color_tableau("Tableau 10") +
         labs(
           y = "",
-          x = "Number of exposures",
-          fill = "Exposure"
+          x = expression(-log[10](p-value)),
+          color = "Exposure"
         ) +
         theme_classic() +
         theme(
@@ -916,7 +917,7 @@ if (length(pathway_files) > 0) {
 
 
       # Combine plots using patchwork
-      pathway_combined <- pathway_color_block + pathway_heatmap + pathway_barplot +
+      pathway_combined <- pathway_color_block + pathway_heatmap + pathway_scatter +
         patchwork::plot_layout(
           widths = c(0.2, 0.4, 0.4),
           guides = "collect"
