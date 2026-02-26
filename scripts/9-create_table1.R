@@ -139,7 +139,7 @@ tbl1_overall <- table1_labeled |>
   gtsummary::tbl_summary(
     type = list(
       all_continuous() ~ "continuous2",
-      c(gender, mh62, demcind) ~ "categorical"
+      all_categorical() ~ "categorical"
     ),
     statistic = list(
       all_continuous() ~ c("{mean} ({sd})", "{median} [{p25}, {p75}]"),

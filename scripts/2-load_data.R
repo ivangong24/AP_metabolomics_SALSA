@@ -31,7 +31,6 @@
   
   # set up parallel processing
   future::plan(multisession)
-  doFuture::registerDoFuture()
 
   # load AP exposure data in parallel
   system.time({
