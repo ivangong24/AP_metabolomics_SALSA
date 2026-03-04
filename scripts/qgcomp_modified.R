@@ -9,7 +9,8 @@ run_qgcomp_boot_parallel <- function(data,
                                      outcomes_list,
                                      covariates_list,
                                      q = 4, B = 200, seed = 42,
-                                     family = binomial(),
+                                     family = NULL,
+                                     rr = FALSE,         # used only for binomial
                                      workers = NULL,
                                      quiet = FALSE,
                                      progress_handler = c("txtprogressbar", "cli")) {
@@ -33,6 +34,20 @@ run_qgcomp_boot_parallel <- function(data,
     stop("Missing columns in `data`: ", paste(missing_cols, collapse = ", "))
   }
   
+  # ---- automatic family detection ----
+  detect_family <- function(y) {
+    y_nonmiss <- y[!is.na(y)]
+    uniq <- unique(y_nonmiss)
+    
+    if (is.logical(y_nonmiss) ||
+        is.factor(y_nonmiss) && length(uniq) == 2 ||
+        (length(uniq) <= 2 && all(sort(uniq) %in% c(0,1)))) {
+      return(stats::binomial())
+    } else {
+      return(stats::gaussian())
+    }
+  }
+
   # Reduce copying: keep only needed cols once
   data_small <- dplyr::select(data, dplyr::all_of(all_needed))
   
@@ -42,24 +57,47 @@ run_qgcomp_boot_parallel <- function(data,
   fit_one <- function(outcome, this_seed) {
     form <- stats::as.formula(paste(outcome, "~", rhs))
     
-    if (!quiet) message("Fitting qgcomp.boot model: ", deparse(form))
-    
     dat_cc <- data_small |>
       dplyr::select(dplyr::all_of(c(outcome, exposures_list, covariates_list))) |>
       dplyr::filter(dplyr::if_all(dplyr::everything(), ~ !is.na(.x)))
     
-    model <- tryCatch(
-      qgcomp::qgcomp.glm.boot(
-        f      = form,
-        data   = dat_cc,
-        expnms = exposures_list,
-        q      = q,
-        B      = B,
-        seed   = this_seed,   # IMPORTANT: distinct per outcome
-        family = family
-      ),
-      error = function(e) e
-    )
+    # Determine family
+    fam <- if (is.null(family)) {
+      detect_family(dat_cc[[outcome]])
+    } else {
+      family
+    }
+    
+    if (!quiet) {
+      message("Fitting qgcomp.boot model for: ", outcome, deparse(form), 
+              " with family = ", fam$family)
+    }
+    
+    
+    model <- tryCatch({
+      if (fam$family == "binomial") {
+        qgcomp::qgcomp.glm.boot(
+          f = form,
+          data = dat_cc,
+          expnms = exposures_list,
+          q = q,
+          B = B,
+          seed   = this_seed,   # IMPORTANT: distinct per outcome
+          family = fam,
+          rr = rr
+        )
+      } else {
+        qgcomp::qgcomp.glm.boot(
+          f      = form,
+          data   = dat_cc,
+          expnms = exposures_list,
+          q      = q,
+          B      = B,
+          seed   = this_seed,   # IMPORTANT: distinct per outcome
+          family = fam
+        )
+      }
+    }, error = function(e) e)
     
     if (inherits(model, "error")) {
       if (!quiet) message("Model failed for outcome ", outcome, ": ", model$message)
@@ -177,7 +215,7 @@ run_qgcomp_noboot_parallel <- function(data,
                                        covariates_list,
                                        q = 4,
                                        seed = 42,
-                                       family = binomial(),
+                                       family = NULL,
                                        id_cols = NULL,   # e.g., c("rand_id","blood_date") for merging
                                        workers = NULL,
                                        quiet = FALSE,
@@ -201,6 +239,20 @@ run_qgcomp_noboot_parallel <- function(data,
     stop("Missing columns in `data`: ", paste(missing_cols, collapse = ", "))
   }
   
+  # ---- automatic family detection ----
+  detect_family <- function(y) {
+    y_nonmiss <- y[!is.na(y)]
+    uniq <- unique(y_nonmiss)
+    
+    if (is.logical(y_nonmiss) ||
+        is.factor(y_nonmiss) && length(uniq) == 2 ||
+        (length(uniq) <= 2 && all(sort(uniq) %in% c(0,1)))) {
+      return(stats::binomial())
+    } else {
+      return(stats::gaussian())
+    }
+  }
+  
   # ID strategy for merging back
   if (is.null(id_cols) || length(id_cols) == 0) {
     data_id <- dplyr::mutate(data, row_id = dplyr::row_number())
@@ -214,25 +266,25 @@ run_qgcomp_noboot_parallel <- function(data,
   
   rhs <- paste(c(exposures_list, covariates_list), collapse = " + ")
   
-  # ---- helper: compute q-category using cutpoints from training data ----
-  # Returns integer in 0..(q-1), NA if x is NA.
-  quantize_with_breaks <- function(x, breaks) {
-    if (all(is.na(x))) return(rep(NA_integer_, length(x)))
-    # cut returns factor; convert to integer 0..(q-1)
-    out <- cut(x, breaks = breaks, include.lowest = TRUE, right = TRUE, labels = FALSE)
-    ifelse(is.na(out), NA_integer_, out - 1L)
-  }
-  
-  # ---- helper: build per-exposure breaks from training data ----
-  # Uses quantiles; if ties collapse breaks too much, falls back to ntile for that exposure.
-  make_breaks <- function(x, q) {
-    probs <- seq(0, 1, length.out = q + 1)
-    br <- stats::quantile(x, probs = probs, na.rm = TRUE, type = 7)
-    br <- unique(as.numeric(br))
-    if (length(br) < 2) return(NULL)      # cannot cut
-    if (length(br) < (q + 1)) return(br)  # fewer bins than q due to ties; still usable
-    br
-  }
+  # # ---- helper: compute q-category using cutpoints from training data ----
+  # # Returns integer in 0..(q-1), NA if x is NA.
+  # quantize_with_breaks <- function(x, breaks) {
+  #   if (all(is.na(x))) return(rep(NA_integer_, length(x)))
+  #   # cut returns factor; convert to integer 0..(q-1)
+  #   out <- cut(x, breaks = breaks, include.lowest = TRUE, right = TRUE, labels = FALSE)
+  #   ifelse(is.na(out), NA_integer_, out - 1L)
+  # }
+  # 
+  # # ---- helper: build per-exposure breaks from training data ----
+  # # Uses quantiles; if ties collapse breaks too much, falls back to ntile for that exposure.
+  # make_breaks <- function(x, q) {
+  #   probs <- seq(0, 1, length.out = q + 1)
+  #   br <- stats::quantile(x, probs = probs, na.rm = TRUE, type = 7)
+  #   br <- unique(as.numeric(br))
+  #   if (length(br) < 2) return(NULL)      # cannot cut
+  #   if (length(br) < (q + 1)) return(br)  # fewer bins than q due to ties; still usable
+  #   br
+  # }
   
   # ---- helper: extract weights robustly across qgcomp versions ----
   get_weights <- function(mod, exposures_list) {
@@ -262,7 +314,6 @@ run_qgcomp_noboot_parallel <- function(data,
   
   fit_one <- function(outcome) {
     form <- stats::as.formula(paste(outcome, "~", rhs))
-    if (!quiet) message("Fitting qgcomp.glm.noboot: ", deparse(form))
     
     # complete cases for model fit
     dat_cc <- data_small |>
@@ -273,6 +324,18 @@ run_qgcomp_noboot_parallel <- function(data,
                                                   covariates_list)), 
                                   ~ !is.na(.x)))
     
+    # Determine family
+    fam <- if (is.null(family)) {
+      detect_family(dat_cc[[outcome]])
+    } else {
+      family
+    }
+    
+    if (!quiet) {
+      message("Fitting qgcomp.noboot model for: ", outcome, deparse(form), 
+              " with family = ", fam$family)
+    }
+    
     # Fit noboot model (fixed weights)
     model <- tryCatch(
       qgcomp::qgcomp.glm.noboot(
@@ -280,7 +343,7 @@ run_qgcomp_noboot_parallel <- function(data,
         data   = dat_cc,
         expnms = exposures_list,
         q      = q,
-        family = family
+        family = fam
       ),
       error = function(e) e
     )
@@ -341,27 +404,28 @@ run_qgcomp_noboot_parallel <- function(data,
     # ---- Build composite exposure for ALL rows using training cutpoints + fixed weights ----
     w <- get_weights(model, exposures_list) # list(wpos, wneg)
     
-    # breaks per exposure computed from training complete-case data
-    breaks_list <- purrr::map(exposures_list, ~ make_breaks(dat_cc[[.x]], q))
-    names(breaks_list) <- exposures_list
-    
-    # quantize each exposure in the full dataset using training breaks; fallback to ntile if breaks NULL
-    qmat <- purrr::map_dfc(exposures_list, function(xnm) {
-      x_full <- data_small[[xnm]]
-      br <- breaks_list[[xnm]]
-      
-      qx <- if (is.null(br)) {
-        # extreme tie case: fall back to ntile on full data
-        dplyr::ntile(x_full, q) - 1L
-      } else {
-        quantize_with_breaks(x_full, br)
-      }
-      
-      tibble::tibble(!!xnm := as.integer(qx))
-    })
+    # # breaks per exposure computed from training complete-case data
+    # breaks_list <- purrr::map(exposures_list, ~ make_breaks(dat_cc[[.x]], q))
+    # names(breaks_list) <- exposures_list
+    # 
+    # # quantize each exposure in the full dataset using training breaks; fallback to ntile if breaks NULL
+    # qmat <- purrr::map_dfc(exposures_list, function(xnm) {
+    #   x_full <- data_small[[xnm]]
+    #   br <- breaks_list[[xnm]]
+    #   
+    #   qx <- if (is.null(br)) {
+    #     # extreme tie case: fall back to ntile on full data
+    #     dplyr::ntile(x_full, q) - 1L
+    #   } else {
+    #     quantize_with_breaks(x_full, br)
+    #   }
+    #   
+    #   tibble::tibble(!!xnm := as.integer(qx))
+    # })
     
     # composite = sum(wpos * qx) - sum(wneg * qx)
-    qmat_num <- as.matrix(qmat)
+    # qmat_num <- as.matrix(qmat)
+    qmat_num <- as.matrix(model$qx)
     comp <- as.numeric(qmat_num %*% w$wpos) - as.numeric(qmat_num %*% w$wneg)
     
     comp_tbl <- data_small |>

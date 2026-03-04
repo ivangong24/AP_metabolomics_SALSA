@@ -71,6 +71,9 @@
                                      ) |> 
                        dplyr::select(-matches("sa|bl_date|birth_date")),
                      by = "rand_id") |> 
+    dplyr::mutate(mse3_ultimate = coalesce(fv6_mse3_new, fv5_mse3_new, fv4_mse3_new, 
+                                  fv3_mse3_new, av1_mse3_new, bl_mse3_new)
+    ) |>
     # transform weight from lbs to kg, height from inches to cm, and calculate BMI for each visit
     dplyr::mutate(
       across(ends_with("weight"), ~ .x * 0.45359237, .names = "{.col}_kg"),
@@ -273,6 +276,9 @@ mean(salsa_data_04212016$dcst, na.rm = TRUE)
                                                    bl_mse3_new),
                  TRUE ~ NA
                ),
+               mse3_at_blooddraw = dplyr::if_else(
+                 is.na(mse3_at_blooddraw), 
+                 mse3_ultimate, mse3_at_blooddraw),
                age_at_blooddraw = dplyr::case_when(
                  blood_date == bl_date ~ blage,
                  blood_date == av1_date ~ av1age,
@@ -489,7 +495,7 @@ mean(salsa_data_04212016$dcst, na.rm = TRUE)
 
 # make a heatmap for exposure correlations
 pheatmap::pheatmap(
-  cor(air_toxicants_avg_ztrans_list[[1]] %>%
+  cor(air_toxicants_avg_ztrans_list[["total"]][["all"]] %>%
         select(-c(rand_id, blood_date, exp_o3, exp_zinc)),
       use = "complete.obs"),
   display_numbers = TRUE
@@ -503,7 +509,8 @@ pheatmap::pheatmap(
 # demcind in the total population analysis
 
 myvars_covar <- quote_all(age_at_blooddraw, gender, edu_year, mh62,
-                          bmi_at_blooddraw, diab_at_blooddraw, demcind)
+                          bmi_at_blooddraw, diab_at_blooddraw, 
+                          demcind)
 
 
 # Prepare covariate matrices -------------------------------------------------
@@ -529,11 +536,11 @@ list(
                 data1 |>
                   dplyr::rename_all(str_to_lower),
                 by = c("id", "file.name_new")) |>
-                  dplyr::select(file.name_new, rand_id, blood_date,
-                                all_of(myvars_covar)) |>
-                  dplyr::filter(file.name_new %in% colnames(data2)) |>
-                  # dplyr::select(-rand_id) |>
-                  tibble::column_to_rownames(var = "file.name_new")
+              dplyr::select(file.name_new, rand_id, blood_date,
+                            all_of(myvars_covar)) |>
+              dplyr::filter(file.name_new %in% colnames(data2)) |>
+              # dplyr::select(-rand_id) |>
+              tibble::column_to_rownames(var = "file.name_new")
           })
       })
   }) %>% 
@@ -541,73 +548,290 @@ list(
   list2env(.GlobalEnv)
 
 
-
-
-
 # QGCOMP MIXTURE MODELS FOR AIR TOXICANTS ---------------------------------
 
-source("scripts/gqcomp_modified.R")
+source("scripts/qgcomp_modified.R")
+library(qgcomp)
+
+vignette("qgcomp-basic-vignette", package="qgcomp")
+vignette("qgcomp-advanced-vignette", package="qgcomp")
 
 ## Identify air toxicant exposure variable names
 exp_vars <- air_toxicants_avg_list[["total"]][["all"]] |>
   dplyr::select(starts_with("exp_")) |>
+  dplyr::select(-matches("o3|zinc")) |> 
   names()
 
-test_data <- covar_list_c18[["total"]][["all"]] |> 
-  left_join(air_toxicants_avg_list[["total"]][["all"]], 
-            by = c("rand_id", "blood_date"))
+# For a sensitivity analysis, 
+# we can also run the model with only traffic-related air toxicants
+exp_vars_traffic <- exp_vars |> 
+  purrr::discard(~ str_detect(.x, regex("nickel|chromium|lead", 
+                                        ignore_case = TRUE)))
 
-test_out <- run_qgcomp_boot_parallel(
-  data = test_data,
+# create combined dataset for analysis
+combined_data_list <- list(covar_list_c18, air_toxicants_avg_list) |>
+  purrr::pmap(function(covar_datalist, exp_datalist){
+    list(covar_datalist, exp_datalist) |>
+      purrr::pmap(function(covar_df, exp_df){
+        covar_df |>
+          dplyr::left_join(exp_df |>
+                             dplyr::select(rand_id, blood_date,
+                                           all_of(exp_vars)),
+                           by = c("rand_id", "blood_date"))
+      })
+  })
+
+skimr::skim(combined_data_list[["total"]][["all"]])
+
+list(
+  exp_vars,
+  exp_vars_traffic
+) |> 
+  purrr::map(function(exp_list){
+     run_qgcomp_noboot_parallel(
+      data = combined_data_list[["total"]][["all"]],
+      exposures_list = exp_list,
+      outcomes_list = "demcind",
+      covariates_list = myvars_covar |> 
+        discard(~str_detect(.x, "demcind")),
+      q = 4,
+      seed = 42,
+      workers = 8,                # set based on your machine
+      id_cols = c("rand_id", "blood_date")
+    )
+  }) |> 
+  set_names("qgcomp_model_weight_all", "qgcomp_model_weight_traffic") |>
+  list2env(.GlobalEnv)
+
+list(
+  exp_vars,
+  exp_vars_traffic
+) |> 
+  purrr::map(function(exp_list){
+    qgcomp::qgcomp.glm.boot(
+      f = as.formula(paste("demcind ~ ", 
+                           paste(c(exp_vars, myvars_covar |> 
+                                     discard(~str_detect(.x, "demcind"))), 
+                                 collapse = " + "))),
+      data = combined_data_list[["total"]][["all"]],
+      expnms = exp_list,
+      q = 4,
+      B = 200,
+      seed   = 42,   # IMPORTANT: distinct per outcome,
+      family = binomial()
+    )
+  }) |> 
+  set_names("qgcomp_model_weight_all", "qgcomp_model_weight_traffic") |>
+  list2env(.GlobalEnv)
+
+test <- air_toxicants_avg_list[["total"]][["all"]] |> 
+  select(rand_id, blood_date, starts_with("exp_")) |> 
+  select(-matches("o3|zinc"))
+
+# calculate the proportion of being exposed with 50% percentile as the cutoff for each toxicant
+test_prop <- test |>
+  pivot_longer(cols = starts_with("exp_"), 
+               names_to = "toxicant", 
+               values_to = "exposure") |>
+  group_by(toxicant) |>
+  summarize(prop_exposed = mean(exposure >= mean(exposure), na.rm = TRUE))
+
+  
+
+qgcomp_df <- list(qgcomp_model_weight_all, qgcomp_model_weight_traffic) |> 
+  purrr::map(function(model){
+    model$composites
+  }) |> 
+  reduce(left_join, by = c("rand_id", "blood_date")) |> 
+  rename(
+    comp_qgcomp_all = comp_demcind.x,
+    comp_qgcomp_traffic = comp_demcind.y
+  )
+
+qgcomp_df <- list(qgcomp_model_weight_all, qgcomp_model_weight_traffic) |> 
+  purrr::map(function(model){
+    
+  })
+
+qgcomp_model_weight <- run_qgcomp_noboot_parallel(
+  data = combined_data,
   exposures_list = exp_vars,
   outcomes_list = "demcind",
-  covariates_list = myvars_covar |> 
-    discard(~str_detect(.x, "demcind")),
-  q = 4, B = 200, seed = 42,
-  workers = 6,                # set based on your machine
-  progress_handler = "txtprogressbar"
-)
-
-test_out$results
-
-skimr::skim(test_data)
-
-test_model <- qgcomp::qgcomp.glm.boot(
-  f      = as.formula(paste("demcind", "~", 
-                            paste(c(exp_vars, myvars_covar |> 
-                                      discard(~str_detect(.x, "demcind"))), 
-                                  collapse = " + "))),
-  data   = test_data,
-  expnms = exp_vars,
-  q      = 4,
-  B      = 200,
-  seed   = 42,   # IMPORTANT: distinct per outcome
-  family = binomial(),
-  rr = FALSE
-)
-
-summary(test_model)
-
-
-test_out_weight <- run_qgcomp_noboot_parallel(
-  data = test_data,
-  exposures_list = exp_vars,
-  outcomes_list = "demcind",
-  covariates_list = myvars_covar |> 
+  covariates_list = myvars_covar |>
     discard(~str_detect(.x, "demcind")),
   q = 4,
   seed = 42,
-  workers = 6,                # set based on your machine
+  workers = 8,                # set based on your machine
   id_cols = c("rand_id", "blood_date")
 )
 
-test_exp_df <- test_data |> 
-  dplyr::left_join(test_out_weight$composites, by = c("rand_id", "blood_date"))
+test_qgcomp_model <- qgcomp::qgcomp.glm.noboot(
+  f = as.formula(paste("demcind ~ ", 
+                       paste(c(exp_vars, myvars_covar |> 
+                                 discard(~str_detect(.x, "demcind"))), 
+                             collapse = " + "))),
+  data = combined_data,
+  expnms = exp_vars,
+  q = 4,
+  # B = 200,
+  # seed   = 42,   # IMPORTANT: distinct per outcome
+  family = binomial()
+)
 
+summary(test_qgcomp_model)
+
+# PCA MIXTURE MODELS FOR AIR TOXICANTS ---------------------------------
+
+combined_data_list <- list(covar_list_c18, air_toxicants_avg_list) |>
+  purrr::pmap(function(covar_datalist, exp_datalist){
+    list(covar_datalist, exp_datalist) |>
+      purrr::pmap(function(covar_df, exp_df){
+            covar_df |>
+              dplyr::left_join(exp_df |>
+                                 dplyr::select(rand_id, blood_date,
+                                               all_of(exp_vars)),
+                               by = c("rand_id", "blood_date"))
+      })
+  })
+
+
+
+pca_fit_list <- combined_data_list %>%
+  purrr::map(function(dflist){
+    dflist |>
+      purrr::map(function(data){
+        data |>
+          dplyr::select(all_of(exp_vars)) |>
+          scale() |> 
+          prcomp(center = TRUE, scale. = TRUE)
+      })
+  })
+
+summary(pca_fit_list[[1]][[1]])$importance[2, 1]
+plot(pca_fit_list[[1]][[1]], type = "l", main = "Scree Plot")
+
+test <- pca_fit_list[[1]][[1]]$x[, 1] |>
+  as.data.frame()
+
+# WQS MIXTURE MODELS FOR AIR TOXICANTS ---------------------------------
+
+library(gWQS)
+
+source("scripts/wqs_modified.R")
+
+list(
+  exp_vars,
+  exp_vars_traffic
+) |> 
+  purrr::map(function(exp_list){
+    covars <- myvars_covar |> 
+      purrr::discard(~ stringr::str_detect(.x, "demcind|diab_at_blooddraw"))
+    
+    run_wqs(
+      data = combined_data_list[["total"]][["all"]],
+      outcome = "demcind",
+      mix_name = exp_list,
+      covariates = covars,
+      id_cols = c("rand_id", "blood_date"),
+      q = 4,
+      validation = 0.6,
+      b = 200,
+      b1_pos = TRUE,
+      b_constr = FALSE,
+      rh = 5,
+      family = "binomial",
+      seed = 42
+    )
+  }) |>
+  set_names("wqs_model_weight_all", "wqs_model_weight_traffic") |>
+  list2env(.GlobalEnv)
+
+table(combined_data$mh62)
+exp(summary(wqs_model_weight_all$model)$coefficients[,c("Estimate", "2.5 %", "97.5 %")])
+exp(summary(wqs_model_weight_traffic$model)$coefficients[,c("Estimate", "2.5 %", "97.5 %")])
+
+
+wqs_model_weight_all$model$final_weights
+wqs_model_weight_traffic$model$final_weights
+  
+wqs_df <- list(wqs_model_weight_all, wqs_model_weight_traffic)|>
+  purrr::map(function(model){
+    tibble::as_tibble(model$wqs_df) |> 
+      rename(comp_wqs = wqs)
+  }) |> 
+  reduce(left_join, by = c("rand_id", "blood_date")) |> 
+  rename(comp_wqs_all = comp_wqs.x,
+         comp_wqs_traffic = comp_wqs.y)
+
+list(air_toxicants_avg_list,
+     pca_fit_list) |>
+  purrr::pmap(function(exp_list, pca_list){
+    list(exp_list, pca_list) |>
+      purrr::pmap(function(exp_data, pca_fit){
+        exp_data |>
+          dplyr::mutate(
+            across(all_of(exp_vars),
+                   ~ as.numeric(.x) / quantile(.x, probs = seq(0, 1, by = 0.25),
+                                               na.rm = TRUE)[2],
+                               .names = "{.col}_quant")) |>
+          dplyr::left_join(wqs_df, 
+                           by = c("rand_id", "blood_date")) |>
+          dplyr::mutate(comp_pca = pca_fit$x[, 1])
+      })
+  }) -> air_toxicants_avg_list_new
+
+air_toxicants_avg_list |> 
+  map(function(dflist){
+    dflist |> 
+      map(function(data){
+        data |> 
+          dplyr::mutate(
+            across(all_of(exp_vars),
+                   ~ as.numeric(.x) / quantile(.x, probs = seq(0, 1, by = 0.25),
+                                               na.rm = TRUE)[2],
+                   .names = "{.col}_quant")) |>
+          # create unsupervised equal weight quantile-based index
+          # dplyr::mutate(comp_equal_all = rowMeans(across(ends_with("_quant")), 
+          #                                         na.rm = TRUE),
+          #               comp_equal_traffic = rowMeans(across(
+          #                 ends_with("_quant") & 
+          #                   !matches("nickel|chromium|lead")), 
+          #                 na.rm = TRUE
+          #               )) |>
+          dplyr::left_join(wqs_df, 
+                           by = c("rand_id", "blood_date"))
+      })
+  }) -> air_toxicants_avg_list_new
+
+test <- air_toxicants_avg_list[["total"]][["all"]] |> 
+  dplyr::left_join(wqs_df, 
+                   by = c("rand_id", "blood_date")) |> 
+  dplyr::left_join(qgcomp_df, 
+            by = c("rand_id", "blood_date"))
 
 pheatmap::pheatmap(
-  cor(test_exp_df %>%
-        select(starts_with("exp_"), starts_with("comp_")),
+  cor(air_toxicants_avg_list_new[[1]][[1]] %>%
+        dplyr::select(ends_with("_quant"), starts_with("comp_")),
+      use = "complete.obs"),
+  display_numbers = TRUE
+)
+
+test_model <- glm(as.formula(paste("demcind", "~ comp_qgcomp_all + ", 
+                                   paste(myvars_covar |> 
+                                             discard(~str_detect(.x, "demcind")), 
+                                         collapse = " + "))),
+                  data = covar_list_c18[["total"]][["all"]] |> 
+                    left_join(air_toxicants_avg_list_new[["total"]][["all"]] |> 
+                                select(rand_id, blood_date, starts_with("comp"), 
+                                       exp_pm2.5_quant, exp_benzene_quant), 
+                              by = c("rand_id", "blood_date")),
+                  family = "binomial")
+
+exp(confint(test_model))
+
+pheatmap::pheatmap(
+  cor(air_toxicants_avg_list_new[[1]][[1]] %>%
+        dplyr::select(ends_with("_quant"), starts_with("comp_")),
       use = "complete.obs"),
   display_numbers = TRUE
 )
