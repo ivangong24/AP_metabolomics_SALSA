@@ -742,6 +742,23 @@ qgcomp_df <- list(qgcomp_model_weight_all, qgcomp_model_weight_traffic) |>
 #       })
 #   }) -> air_toxicants_avg_list_new
 
+combined_data_list |> 
+  map(function(dflist){
+    dflist |> 
+      map(function(data){
+        data |> 
+          dplyr::mutate(
+            across(all_of(exp_vars),
+                   ~ as.numeric(.x) / quantile(.x, probs = seq(0, 1, by = 0.25),
+                                               na.rm = TRUE)[2],
+                   .names = "{.col}_quant")) |>
+          dplyr::left_join(wqs_df, 
+                           by = c("rand_id", "blood_date")) |> 
+          dplyr::left_join(qgcomp_df, 
+                           by = c("rand_id", "blood_date"))
+      })
+  }) -> combined_data_list_new
+
 air_toxicants_avg_list |> 
   map(function(dflist){
     dflist |> 
@@ -1068,6 +1085,9 @@ save(salsa_clean_total, salsa_clean_cox, salsa_clean_new_list,
 save(air_toxicants_avg_list, air_toxicants_avg_ztrans_list,
      air_toxicants_avg_list_new,
      file = here::here("data", "processed", "air_toxicants_exposure.RData"))
+
+save(combined_data_list_new, file = here::here("data", "processed", 
+                                               "combined_data_list_new.RData"))
 
 save(covar_list_c18, covar_list_hilic,
      file = here::here("data", "processed", "covar_matrices.RData"))

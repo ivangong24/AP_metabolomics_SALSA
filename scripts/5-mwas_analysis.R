@@ -65,12 +65,12 @@ list(
   list(med_c18_raw_combat_processed, med_hil_raw_combat_processed)
 ) |> 
   purrr::pmap(function(sample_link, metabo){
-    salsa_clean_new_list[["total"]] |> 
+    combined_data_list_new[["total"]] |> 
       purrr::map(function(data){
         link <- data |> 
           dplyr::select(rand_id, blood_date) |>
-          dplyr::left_join(sample_link, by = c("rand_id", "blood_date")) |> 
-          dplyr::filter(!is.na(file.name_new))
+          dplyr::inner_join(sample_link, by = c("rand_id", "blood_date")) |> 
+          dplyr::arrange(match(file.name_new, colnames(metabo)))
         
         metabo |> 
           dplyr::select(all_of(link$file.name_new))
@@ -84,18 +84,19 @@ list(
 
 list(
   list(sample_link_c18, sample_link_hilic),
-  list(metabo_c18_final, metabo_hilic_final)
+  list(metabo_list_c18_final, metabo_list_hilic_final)
 ) |> 
-  purrr::pmap(function(sample_link, metabo){
-    air_toxicants_avg_list_new[["total"]] |> 
-      purrr::map(function(data){
+  purrr::pmap(function(sample_link, metabo_list){
+    list(combined_data_list_new[["total"]],
+         metabo_list) |> 
+      purrr::pmap(function(data, metabo){
         data |> 
           # dplyr::mutate(rand_id = as.character(rand_id)) |>
-          dplyr::left_join(sample_link, by = c("rand_id", "blood_date")) |> 
+          dplyr::inner_join(sample_link, by = c("rand_id", "blood_date")) |> 
           dplyr::arrange(match(file.name_new, colnames(metabo)))
       })
   }) |>
-  purrr::set_names("exposure_list_c18", "exposure_list_hilic") |>
+  purrr::set_names("combined_data_list_c18", "combined_data_list_hilic") |>
   list2env(.GlobalEnv)
 
 # list(
@@ -118,30 +119,35 @@ list(
 
 list(
   list("C18", "HILIC"),
-  list(exposure_list_c18, exposure_list_hilic),
-  list(metabo_c18_final, metabo_hilic_final)
+  list(combined_data_list_c18, combined_data_list_hilic),
+  list(metabo_list_c18_final, metabo_list_hilic_final)
 ) |>
-  purrr::pmap(function(mode, exposure_data_list, metabo) {
+  purrr::pmap(function(mode, combined_data_list, metabo_list) {
     message(paste0(mode, " sample ordering check:"))
-    exposure_data_list |> 
-      purrr::map(function(exposure_data) {
-        print(table(exposure_data$file.name_new == colnames(metabo)))
+    list(combined_data_list, metabo_list) |> 
+      purrr::pmap(function(combined_data, metabo) {
+        print(table(combined_data$file.name_new == colnames(metabo)))
       })
   }) |>
   invisible()
 
-
-
 # Get exposure variable names ------------------------------------------------
 
 ## Extract all exposure variables (air toxicants)
-exposure_vars <- exposure_c18 |>
-  dplyr::select(starts_with("exp_")) |>
+exposure_vars <- combined_data_list_c18[["all"]] |>
+  dplyr::select(starts_with("comp_")) |>
+  colnames()
+
+covars <- combined_data_list_c18[["all"]] |>
+  dplyr::select(all_of(myvars_covar)) |>
+  select(-demcind) |> 
   colnames()
 
 message("Exposure variables for MWAS:")
 print(exposure_vars)
 
+message("Covariates for MWAS:")
+print(covars)
 
 # =============================================================================
 # SECTION 1: LIMMA-BASED MWAS
@@ -150,17 +156,26 @@ print(exposure_vars)
 # Create design matrices for each exposure -----------------------------------
 
 ## Function to create design matrix for a single exposure
-create_design_matrix <- function(exposure_data, exposure_var) {
-  formula_matrix <- as.formula(str_c("~ ", exposure_var))
-  model.matrix(formula_matrix, data = exposure_data)
+create_design_matrix <- function(combined_data, exposure_var, covars) {
+  formula_matrix <- as.formula(str_c("~ ", exposure_var, " + ", 
+                                     paste(covars, collapse = " + ")))
+  model.matrix(formula_matrix, data = combined_data)
 }
 
-## Create design matrices for all exposures - C18
-list(exposure_c18, exposure_hilic) |>
-  purrr::map(function(exp_data){
-    exposure_vars |>
-      purrr::set_names() |>
-      purrr::map(~ create_design_matrix(exp_data, .x))
+formula_matrix <- as.formula(str_c("~ ", "comp_wqs_all", " + ", 
+                                   paste(covars, collapse = " + ")))
+
+test <- model.matrix(formula_matrix, data = combined_data_list_c18[["all"]])
+
+## Create design matrices for all exposures
+list(combined_data_list_c18, combined_data_list_hilic) |>
+  purrr::map(function(combined_data_list){
+    combined_data_list |> 
+       purrr::map(function(combined_data){
+         exposure_vars |>
+           purrr::set_names() |>
+           purrr::map(~ create_design_matrix(combined_data, .x, covars))
+       })
   }) |>
   purrr::set_names("design_c18_list", "design_hilic_list") |>
   list2env(.GlobalEnv)
@@ -176,26 +191,34 @@ plan(multisession, workers = n_workers)
 system.time({
   list(
     list("C18", "HILIC"),
-    list(combined_residual_c18, combined_residual_hilic),
+    list(metabo_list_c18_final, metabo_list_hilic_final),
     list(design_c18_list, design_hilic_list),
-    list(exposure_c18, exposure_hilic)
+    list(combined_data_list_c18, combined_data_list_hilic)
   ) |>
-    purrr::pmap(function(mode, metabo_residual, design_list, exposure_data) {
-      message(paste0("Calculating correlations for ", mode, "..."))
-      block <- exposure_data$rand_id
-      stopifnot(
-        length(block) == ncol(metabo_residual),
-        all(exposure_data$file.name_new == colnames(metabo_residual)))
-      design_list |>
-        furrr::future_map(function(design) {
-          limma::duplicateCorrelation(metabo_residual, design, block = block)
-        }, .options = furrr_options(seed = TRUE))
+    purrr::pmap(function(mode, metabo_list, design_list, combined_data_list) {
+      list(design_list, metabo_list, 
+           combined_data_list, names(combined_data_list)) |> 
+        purrr::pmap(function(designls, metabo, combined_data, population){
+          message(paste0("Calculating correlations for ", mode, 
+                         " in ", population, " ..."))
+          block <- combined_data$rand_id
+          stopifnot(
+            length(block) == ncol(metabo),
+            all(combined_data$file.name_new == colnames(metabo)))
+          
+          designls |>
+            furrr::future_map(function(design) {
+              limma::duplicateCorrelation(metabo, design, block = block)
+            }, .options = furrr_options(seed = TRUE))
+        })
     }) |>
     purrr::set_names("dupcor_c18_list", "dupcor_hilic_list") |>
     list2env(.GlobalEnv)
 })
 
-
+save(dupcor_c18_list, dupcor_hilic_list,
+     file = here::here("data", "processed", 
+                       "duplicate_correlation_results.RData"))
 
 # Fit limma models -----------------------------------------------------------
 
