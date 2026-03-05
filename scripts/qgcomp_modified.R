@@ -290,26 +290,37 @@ run_qgcomp_noboot_parallel <- function(data,
   get_weights <- function(mod, exposures_list) {
     # Common in qgcomp objects:
     # - mod$pos.weights and mod$neg.weights (named vectors)
-    # Some versions also have mod$weights with sign; we handle both.
+    # the original weights are the proportion of sum(coefficient) in each direction
+    # we would like to create a single weight vector with positive weights and negative weights, so that we can compute the composite as sum(w * qx)
     
-    if (!is.null(mod$pos.weights) && !is.null(mod$neg.weights)) {
-      wpos <- mod$pos.weights
-      wneg <- mod$neg.weights
-      wpos <- wpos[exposures_list]; wpos[is.na(wpos)] <- 0
-      wneg <- wneg[exposures_list]; wneg[is.na(wneg)] <- 0
-      return(list(wpos = wpos, wneg = wneg))
-    }
+    coef_df <- tibble(
+      term = names(mod$fit$coefficients),
+      coefficient = mod$fit$coefficients
+    ) |> 
+      filter(term %in% exposures_list) |> 
+      # calculate weights
+      mutate(weight = coefficient / sum(abs(coefficient)))
     
-    if (!is.null(mod$weights)) {
-      w <- mod$weights
-      w <- w[exposures_list]
-      w[is.na(w)] <- 0
-      wpos <- pmax(w, 0)
-      wneg <- pmax(-w, 0)
-      return(list(wpos = wpos, wneg = wneg))
-    }
+    return(list(weight = coef_df$weight))
     
-    stop("Could not find weights in qgcomp model object. Inspect `names(model)` to locate weights.")
+    # if (!is.null(mod$pos.weights) && !is.null(mod$neg.weights)) {
+    #   wpos <- mod$pos.weights
+    #   wneg <- mod$neg.weights
+    #   wpos <- wpos[exposures_list]; wpos[is.na(wpos)] <- 0
+    #   wneg <- wneg[exposures_list]; wneg[is.na(wneg)] <- 0
+    #   return(list(wpos = wpos, wneg = wneg))
+    # }
+    # 
+    # if (!is.null(mod$weights)) {
+    #   w <- mod$weights
+    #   w <- w[exposures_list]
+    #   w[is.na(w)] <- 0
+    #   wpos <- pmax(w, 0)
+    #   wneg <- pmax(-w, 0)
+    #   return(list(wpos = wpos, wneg = wneg))
+    # }
+    
+    stop("Could not find fit in qgcomp model object. Inspect `names(model)` to locate fit.")
   }
   
   fit_one <- function(outcome) {
@@ -426,7 +437,7 @@ run_qgcomp_noboot_parallel <- function(data,
     # composite = sum(wpos * qx) - sum(wneg * qx)
     # qmat_num <- as.matrix(qmat)
     qmat_num <- as.matrix(model$qx)
-    comp <- as.numeric(qmat_num %*% w$wpos) - as.numeric(qmat_num %*% w$wneg)
+    comp <- as.numeric(qmat_num %*% w$weight)
     
     comp_tbl <- data_small |>
       dplyr::distinct(dplyr::across(dplyr::all_of(id_cols))) |>

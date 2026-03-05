@@ -36,26 +36,81 @@ library(furrr)
 
 load(here::here("data", "metabolomics", "processed", "combined_residual_c18.RData"))
 load(here::here("data", "metabolomics", "processed", "combined_residual_hilic.RData"))
-load(here::here("data", "links", "processed", "Sample_links.RData"))
+# load(here::here("data", "links", "processed", "Sample_links.RData"))
+load(here::here("data", "links", "processed", "salsa_clean.RData"))
 load(here::here("data", "processed", "air_toxicants_exposure.RData"))
 
 # Prepare exposure data for MWAS ---------------------------------------------
+
+## finalize the metabolite matrix
+
+list(
+  list(salsa_blood_date_c18, salsa_blood_date_hilic),
+  list(med_c18_raw_combat_processed, med_hil_raw_combat_processed)
+) |> 
+  purrr::pmap(function(data1, data2){
+    data1 |> 
+      select(rand_id, blood_date, file.name_new) |> 
+      filter(file.name_new %in% colnames(data2)) |> 
+      filter(!is.na(rand_id)) |> 
+      distinct()
+  }) |>
+  set_names("sample_link_c18", "sample_link_hilic") |>
+  list2env(envir = .GlobalEnv)
+
+
+
+list(
+  list(sample_link_c18, sample_link_hilic),
+  list(med_c18_raw_combat_processed, med_hil_raw_combat_processed)
+) |> 
+  purrr::pmap(function(sample_link, metabo){
+    salsa_clean_new_list[["total"]] |> 
+      purrr::map(function(data){
+        link <- data |> 
+          dplyr::select(rand_id, blood_date) |>
+          dplyr::left_join(sample_link, by = c("rand_id", "blood_date")) |> 
+          dplyr::filter(!is.na(file.name_new))
+        
+        metabo |> 
+          dplyr::select(all_of(link$file.name_new))
+      })
+  }) |> 
+  purrr::set_names("metabo_list_c18_final", "metabo_list_hilic_final") |>
+  list2env(.GlobalEnv)
+  
 
 ## Merge air toxicants exposure with sample link files
 
 list(
   list(sample_link_c18, sample_link_hilic),
-  list(combined_residual_c18, combined_residual_hilic)
-) |>
-  purrr::pmap(function(sample_link, metabo_residual){
-    sample_link |>
-      dplyr::left_join(air_toxicants_avg_ztrans |>
-                         dplyr::mutate(rand_id = as.character(rand_id)),
-                       by = "rand_id") |>
-      dplyr::arrange(match(file.name_new, colnames(metabo_residual)))
+  list(metabo_c18_final, metabo_hilic_final)
+) |> 
+  purrr::pmap(function(sample_link, metabo){
+    air_toxicants_avg_list_new[["total"]] |> 
+      purrr::map(function(data){
+        data |> 
+          # dplyr::mutate(rand_id = as.character(rand_id)) |>
+          dplyr::left_join(sample_link, by = c("rand_id", "blood_date")) |> 
+          dplyr::arrange(match(file.name_new, colnames(metabo)))
+      })
   }) |>
-  purrr::set_names("exposure_c18", "exposure_hilic") |>
+  purrr::set_names("exposure_list_c18", "exposure_list_hilic") |>
   list2env(.GlobalEnv)
+
+# list(
+#   list(sample_link_c18, sample_link_hilic),
+#   list(combined_residual_c18, combined_residual_hilic)
+# ) |>
+#   purrr::pmap(function(sample_link, metabo_residual){
+#     sample_link |>
+#       dplyr::left_join(air_toxicants_avg_ztrans |>
+#                          dplyr::mutate(rand_id = as.character(rand_id)),
+#                        by = "rand_id") |>
+#       dplyr::arrange(match(file.name_new, colnames(metabo_residual)))
+#   }) |>
+#   purrr::set_names("exposure_c18", "exposure_hilic") |>
+#   list2env(.GlobalEnv)
 
 
 
@@ -63,12 +118,15 @@ list(
 
 list(
   list("C18", "HILIC"),
-  list(exposure_c18, exposure_hilic),
-  list(combined_residual_c18, combined_residual_hilic)
+  list(exposure_list_c18, exposure_list_hilic),
+  list(metabo_c18_final, metabo_hilic_final)
 ) |>
-  purrr::pmap(function(mode, exposure_data, metabo_residual) {
+  purrr::pmap(function(mode, exposure_data_list, metabo) {
     message(paste0(mode, " sample ordering check:"))
-    print(table(exposure_data$file.name_new == colnames(metabo_residual)))
+    exposure_data_list |> 
+      purrr::map(function(exposure_data) {
+        print(table(exposure_data$file.name_new == colnames(metabo)))
+      })
   }) |>
   invisible()
 
