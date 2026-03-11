@@ -393,17 +393,20 @@ load(here::here("data", "metabolomics",
 
 list(
   list(annotation_c18_wide, annotation_hilic_wide),
-  list(significant_c18, significant_hilic),
+  list(significant_results_list_c18, significant_results_list_hilic),
   list("c18", "hilic")
 ) |>
   purrr::pmap(function(annot_wide, sig_mwas_df_list, mode) {
     sig_mwas_df_list |>
-      purrr::map(function(df) {
-        df |>
-          dplyr::left_join(annot_wide, by = c("met" = "id"))
+      purrr::map(function(dflist) {
+        dflist |> 
+          purrr::map(function(df){
+            df |>
+              dplyr::left_join(annot_wide, by = c("met" = "id"))
+          })
       })
   }) |>
-  purrr::set_names("mwas_c18_annotated", "mwas_hilic_annotated") |>
+  purrr::set_names("mwas_annotated_list_c18", "mwas_annotated_list_hilic") |>
   list2env(.GlobalEnv)
 
 
@@ -415,27 +418,31 @@ list(
 # Save annotated MWAS results -------------------------------------------------
 
 list(
-  list(mwas_c18_annotated, mwas_hilic_annotated),
+  list(mwas_annotated_list_c18, mwas_annotated_list_hilic),
   list("c18", "hilic")
 ) |>
-  purrr::pmap(function(df_list, mode) {
-    df_list |>
-      purrr::imap(function(df, exp_name) {
-        df |>
-          writexl::write_xlsx(
-            here::here("tables", "mwas_results",
-                       glue::glue("mwas_{mode}_{exp_name}_sig_annotated.xlsx"))
-          )
-        message(paste0("MWAS results with annotation for ",
-                       exp_name, " ", mode,
-                       " saved successfully!"))
+  purrr::pmap(function(datalist, mode) {
+    datalist |> 
+      purrr::imap(function(dflist, population){
+        dflist |>
+          purrr::imap(function(df, exp_name) {
+            df |>
+              writexl::write_xlsx(
+                here::here(
+                  "tables", "mwas_results", population, 
+                  glue::glue("mwas_{mode}_{exp_name}_{population}_sig_annotated.xlsx"))
+              )
+            message(paste0("MWAS results with annotation for ",
+                           exp_name, " ", mode, " in ", population,
+                           " saved successfully!"))
+          })
       })
   })
 
 
 # Save R objects for downstream analysis -------------------------------------
 
-save(mwas_c18_annotated, mwas_hilic_annotated,
+save(mwas_annotated_list_c18, mwas_annotated_list_hilic,
      file = here::here("data", "metabolomics", "processed",
                        "mwas_annotation.RData"))
 

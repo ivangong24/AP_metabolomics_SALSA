@@ -223,7 +223,7 @@ mean(salsa_data_04212016$dcst, na.rm = TRUE)
            df |>
              dplyr::left_join(data |>
                                 dplyr::select(rand_id, file.name_new,
-                                              blood_date), by = "rand_id") |>
+                                              blood_date, wave), by = "rand_id") |>
              dplyr::mutate(
                final_diab_status = dplyr::coalesce(fv6_diab, fv5_diab, fv4_diab,
                                                    fv3_diab, fv2_diab, av1_diab, 
@@ -440,7 +440,7 @@ mean(salsa_data_04212016$dcst, na.rm = TRUE)
     process_one <- function(salsa_data) {
       exp_long |>
         dplyr::right_join(
-          salsa_data |> dplyr::select(rand_id, id, blood_date),
+          salsa_data |> dplyr::select(rand_id, id, blood_date, wave),
           by = "rand_id"
         ) |>
         dplyr::mutate(
@@ -448,9 +448,9 @@ mean(salsa_data_04212016$dcst, na.rm = TRUE)
           year = lubridate::year(date)
         ) |>
         dplyr::filter(year >= blood_year - 5, year < blood_year) |>
-        dplyr::group_by(rand_id, year, blood_date, toxicant) |>
+        dplyr::group_by(rand_id, year, blood_date, wave, toxicant) |>
         dplyr::summarize(value = mean(value, na.rm = TRUE), .groups = "drop") |>
-        dplyr::group_by(rand_id, blood_date, toxicant) |>
+        dplyr::group_by(rand_id, blood_date, wave, toxicant) |>
         dplyr::summarize(avg_exp = mean(value, na.rm = TRUE), 
                          .groups = "drop") |>
         tidyr::pivot_wider(
@@ -512,7 +512,7 @@ pheatmap::pheatmap(
 # demcind in the total population analysis
 
 myvars_covar <- quote_all(age_at_blooddraw, gender, edu_year, mh62,
-                          bmi_at_blooddraw, diab_at_blooddraw, 
+                          bmi_at_blooddraw, diab_at_blooddraw, wave,
                           demcind)
 
 
@@ -533,7 +533,8 @@ list(
             data |> 
               dplyr::left_join(salsa_data |> 
                                  dplyr::select(rand_id, id, 
-                                               blood_date, file.name_new), 
+                                               blood_date, 
+                                               wave, file.name_new), 
                         by = c("rand_id", "id", "blood_date")) |>
               dplyr::inner_join(
                 data1 |>
@@ -575,11 +576,13 @@ combined_data_list <- list(covar_list_c18, air_toxicants_avg_list) |>
       purrr::pmap(function(covar_df, exp_df){
         covar_df |>
           dplyr::left_join(exp_df |>
-                             dplyr::select(rand_id, blood_date,
+                             dplyr::select(rand_id, blood_date, 
                                            all_of(exp_vars)),
                            by = c("rand_id", "blood_date"))
       })
   })
+
+skim(combined_data_list[["total"]][["all"]])
 
 system.time({
   list(
@@ -588,7 +591,7 @@ system.time({
   ) |> 
     purrr::map(function(exp_list){
       covars <- myvars_covar |> 
-        purrr::discard(~ stringr::str_detect(.x, "demcind"))
+        purrr::discard(~ stringr::str_detect(.x, "demcind|wave"))
       
       run_wqs(
         data = combined_data_list[["total"]][["all"]],
@@ -647,7 +650,7 @@ list(
       exposures_list = exp_list,
       outcomes_list = "demcind",
       covariates_list = myvars_covar |> 
-        discard(~str_detect(.x, "demcind")),
+        discard(~str_detect(.x, "demcind|wave")),
       q = 4,
       seed = 42,
       workers = 8,                # set based on your machine
@@ -749,9 +752,8 @@ combined_data_list |>
         data |> 
           dplyr::mutate(
             across(all_of(exp_vars),
-                   ~ as.numeric(.x) / quantile(.x, probs = seq(0, 1, by = 0.25),
-                                               na.rm = TRUE)[2],
-                   .names = "{.col}_quant")) |>
+                   ~ as.numeric(.x) / IQR(.x, na.rm = TRUE),
+                   .names = "{.col}_iqr")) |>
           dplyr::left_join(wqs_df, 
                            by = c("rand_id", "blood_date")) |> 
           dplyr::left_join(qgcomp_df, 
@@ -766,9 +768,8 @@ air_toxicants_avg_list |>
         data |> 
           dplyr::mutate(
             across(all_of(exp_vars),
-                   ~ as.numeric(.x) / quantile(.x, probs = seq(0, 1, by = 0.25),
-                                               na.rm = TRUE)[2],
-                   .names = "{.col}_quant")) |>
+                   ~ as.numeric(.x) / IQR(.x, na.rm = TRUE),
+                   .names = "{.col}_iqr")) |>
           # create unsupervised equal weight quantile-based index
           # dplyr::mutate(comp_equal_all = rowMeans(across(ends_with("_quant")), 
           #                                         na.rm = TRUE),
@@ -783,6 +784,23 @@ air_toxicants_avg_list |>
                            by = c("rand_id", "blood_date"))
       })
   }) -> air_toxicants_avg_list_new
+
+
+test_combined_data <- combined_data_list_new[["total"]][["all"]]
+
+test_combined_data |> 
+  dplyr::select(starts_with("comp"), ends_with("_iqr")) |> 
+  names() |>
+  purrr::map(function(exp){
+    model <- glm(as.formula(paste("demcind", "~", exp, "+", 
+                       paste(myvars_covar |> 
+                               discard(~str_detect(.x, "demcind")), 
+                             collapse = " + "))),
+        data = test_combined_data,
+        family = "binomial")
+    
+    exp(cbind(OR=coef(model),confint(model)))
+  })
 
 tbl_composite_cor <- air_toxicants_avg_list_new[["total"]][["all"]] %>% 
   select(starts_with("comp")) %>%
