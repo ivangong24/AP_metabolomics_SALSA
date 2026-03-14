@@ -25,20 +25,17 @@
 
 # Load required packages -----------------------------------------------------
 
-library(limma)
-library(mixOmics)
-library(tidyverse)
-library(writexl)
-library(future)
-library(furrr)
+source(here::here("scripts", "1-functions.R"))
 
-# Load residualized metabolomics data ----------------------------------------
+# Load exposure and metabolomics data ----------------------------------------
 
-load(here::here("data", "metabolomics", "processed", "combined_residual_c18.RData"))
-load(here::here("data", "metabolomics", "processed", "combined_residual_hilic.RData"))
-# load(here::here("data", "links", "processed", "Sample_links.RData"))
-load(here::here("data", "links", "processed", "salsa_clean.RData"))
+
+source(here::here("scripts", "2-load_data.R"))
+
+load(here::here("data", "processed", "salsa_clean.RData"))
 load(here::here("data", "processed", "air_toxicants_exposure.RData"))
+load(here::here("data", "processed", "combined_data_list_new.RData"))
+
 
 # Prepare exposure data for MWAS ---------------------------------------------
 
@@ -50,7 +47,7 @@ list(
 ) |> 
   purrr::pmap(function(data1, data2){
     data1 |> 
-      select(rand_id, blood_date, wave, file.name_new) |> 
+      select(rand_id, blood_date, wave, batch, file.name_new) |> 
       filter(file.name_new %in% colnames(data2)) |> 
       filter(!is.na(rand_id)) |> 
       distinct()
@@ -66,8 +63,8 @@ list(
 ) |> 
   purrr::pmap(function(sample_link, metabo){
     combined_data_list_new[["total"]] |> 
-      purrr::map(function(data){
-        link <- data |> 
+      purrr::map(function(datalist){
+        link <- datalist[["covar"]] |> 
           dplyr::select(rand_id, blood_date) |>
           dplyr::inner_join(sample_link, by = c("rand_id", "blood_date")) |> 
           dplyr::arrange(match(file.name_new, colnames(metabo)))
@@ -89,12 +86,15 @@ list(
   purrr::pmap(function(sample_link, metabo_list){
     list(combined_data_list_new[["total"]],
          metabo_list) |> 
-      purrr::pmap(function(data, metabo){
-        data |> 
-          # dplyr::mutate(rand_id = as.character(rand_id)) |>
-          dplyr::inner_join(sample_link, by = c("rand_id", "blood_date", 
-                                                "wave")) |> 
-          dplyr::arrange(match(file.name_new, colnames(metabo)))
+      purrr::pmap(function(datalist, metabo){
+        datalist |> 
+          purrr::map(function(data){
+            data |> 
+              # dplyr::mutate(rand_id = as.character(rand_id)) |>
+              dplyr::inner_join(sample_link, by = c("rand_id", "blood_date", 
+                                                    "wave", "batch")) |> 
+              dplyr::arrange(match(file.name_new, colnames(metabo)))
+          })
       })
   }) |>
   purrr::set_names("combined_data_list_c18", "combined_data_list_hilic") |>
@@ -126,29 +126,44 @@ list(
   purrr::pmap(function(mode, combined_data_list, metabo_list) {
     message(paste0(mode, " sample ordering check:"))
     list(combined_data_list, metabo_list) |> 
-      purrr::pmap(function(combined_data, metabo) {
-        print(table(combined_data$file.name_new == colnames(metabo)))
+      purrr::pmap(function(combined_dflist, metabo) {
+         combined_dflist |> 
+           purrr::map(function(combined_data){
+             print(table(combined_data$file.name_new == colnames(metabo)))
+           }) 
       })
   }) |>
   invisible()
 
 # Get exposure variable names ------------------------------------------------
 
+covar_list <- list(
+  covar = quote_all(age_at_blooddraw, gender, edu_year, mh62, 
+                    wave, batch, demcind),
+  
+  covar_sen = quote_all(age_at_blooddraw, gender, edu_year, mh62,
+                        alcohol_drinking, pa3_met_if_ca, nses, 
+                        bmi_at_blooddraw, diab_at_blooddraw, 
+                        wave, batch, demcind)
+  
+)
+
 ## Extract all exposure variables (air toxicants)
-exposure_vars <- combined_data_list_c18[["all"]] |>
+exposure_vars <- combined_data_list_c18[["all"]][["covar"]] |>
   dplyr::select(starts_with("comp_"), ends_with("iqr")) |>
   colnames()
 
-covars <- combined_data_list_c18[["all"]] |>
-  dplyr::select(all_of(myvars_covar)) |>
-  select(-demcind) |> 
-  colnames()
+covars_list_new <- covar_list |> 
+  purrr::map(function(covars){
+    covars |> 
+      purrr::discard(~ str_detect(.x, regex("demcind", ignore_case = TRUE)))
+  })
 
 message("Exposure variables for MWAS:")
 print(exposure_vars)
 
 message("Covariates for MWAS:")
-print(covars)
+print(covars_list_new)
 
 # =============================================================================
 # SECTION 1: LIMMA-BASED MWAS
@@ -165,13 +180,22 @@ create_design_matrix <- function(combined_data, exposure_var, covars) {
 
 
 ## Create design matrices for all exposures
-list(combined_data_list_c18, combined_data_list_hilic) |>
-  purrr::map(function(combined_data_list){
+list(
+  list(combined_data_list_c18, combined_data_list_hilic),
+  list("C18", "Hilic")
+) |>
+  purrr::pmap(function(combined_data_list, mode){
     combined_data_list |> 
-       purrr::map(function(combined_data){
-         exposure_vars |>
-           purrr::set_names() |>
-           purrr::map(~ create_design_matrix(combined_data, .x, covars))
+       purrr::imap(function(combined_dflist, population){
+         list(combined_dflist, covars_list_new, names(covars_list_new)) |> 
+           purrr::pmap(function(combined_data, covars, covar_name){
+             message(paste0("Creating design matrices for ", population, " in ", 
+                            mode," with covariates set: ", covar_name, " ..."))
+             
+             exposure_vars |>
+               purrr::set_names() |>
+               purrr::map(~ create_design_matrix(combined_data, .x, covars))
+           })
        })
   }) |>
   purrr::set_names("design_c18_list", "design_hilic_list") |>
@@ -180,10 +204,11 @@ list(combined_data_list_c18, combined_data_list_hilic) |>
 # Estimate within-subject correlation for duplicate measures -------------------
 
 ## Set up parallel backend
-n_workers <- parallelly::availableCores() - 1
+n_workers <- max(1, future::availableCores() - 1)
 message(paste0("Setting up parallel plan with ", n_workers, " workers..."))
-plan(multisession, workers = n_workers)
+future::plan(future::multisession, workers = n_workers)
 
+## Estimate duplicate correlation for each exposure and population
 system.time({
   list(
     list("C18", "HILIC"),
@@ -194,18 +219,24 @@ system.time({
     purrr::pmap(function(mode, metabo_list, design_list, combined_data_list) {
       list(design_list, metabo_list, 
            combined_data_list, names(combined_data_list)) |> 
-        purrr::pmap(function(designls, metabo, combined_data, population){
-          message(paste0("Calculating correlations for ", mode, 
-                         " in ", population, " ..."))
-          block <- combined_data$rand_id
-          stopifnot(
-            length(block) == ncol(metabo),
-            all(combined_data$file.name_new == colnames(metabo)))
-          
-          designls |>
-            furrr::future_map(function(design) {
-              limma::duplicateCorrelation(metabo, design, block = block)
-            }, .options = furrr_options(seed = TRUE))
+        purrr::pmap(function(design_ls, metabo, combined_dflist, population){
+          list(design_ls, combined_dflist, names(combined_dflist)) |> 
+            purrr::pmap(function(designls, combined_data, covar_name){
+              message(paste0("Calculating duplicate correlation for ", mode, 
+                             " in ", population, " with covariates set: ", 
+                             covar_name, " ..."))
+              
+              block <- combined_data$rand_id
+              stopifnot(
+                length(block) == ncol(metabo),
+                all(combined_data$file.name_new == colnames(metabo)))
+              
+              designls |>
+                furrr::future_map(function(design) {
+                  limma::duplicateCorrelation(metabo, design, block = block)
+                }, .options = furrr_options(seed = TRUE), .progress = TRUE)
+
+            })
         })
     }) |>
     purrr::set_names("dupcor_c18_list", "dupcor_hilic_list") |>
@@ -226,6 +257,8 @@ fit_limma <- function(metabolome_matrix, design_matrix, block, correlation) {
   return(fit)
 }
 
+future::plan(future::multisession, workers = n_workers)
+
 system.time({
   list(
     list("C18", "HILIC"),
@@ -239,18 +272,25 @@ system.time({
                          dupcor_list, combined_data_list) {
       list(design_list, metabo_list, 
            dupcor_list, combined_data_list, names(combined_data_list)) |> 
-        purrr::pmap(function(designls, metabo, dupcor, 
-                             combined_data, population){
-          message(paste0("Fitting limma models for ", mode, 
-                         " in ", population,  "..."))
-          block <- combined_data$rand_id
-          designls |>
-            purrr::map(function(design) {
-              fit_limma(metabo, design,
-                        block = block,
-                        correlation = dupcor$consensus.correlation)
+        purrr::pmap(function(design_ls, metabo, dupcor_ls, 
+                             combined_dflist, population){
+          list(design_ls, dupcor_ls, combined_dflist, names(combined_dflist)) |> 
+            purrr::pmap(function(designls, dupcorls, combined_data, covar_name){
+              message(paste0("Fitting limma models for ", mode, 
+                             " in ", population, " with covariates set: ", 
+                             covar_name, " ..."))
+              
+              block <- combined_data$rand_id
+              
+              list(designls, dupcorls) |>
+                furrr::future_pmap(function(design, dupcor) {
+                  fit_limma(metabo, design,
+                            block = block,
+                            correlation = dupcor$consensus.correlation)
+                }, .options = furrr_options(seed = TRUE), .progress = TRUE)
+              
             })
-          
+ 
           # list(design_list, dupcor_list) |>
           #   furrr::future_pmap(function(design, dupcor) {
           #     fit_limma(metabo_residual, design,
@@ -295,12 +335,16 @@ list(
   purrr::pmap(function(mode, fit_list, design_list, metabo_list){
     
     list(fit_list, design_list, metabo_list, names(metabo_list)) |>
-      purrr::pmap(function(fitls, designls, metabo, population) {
-        message(paste0("Extracting MWAS results for ", mode, 
-                       " in ", population, "..."))
-        list(fitls, designls) |>
-          purrr::pmap(function(fit, design) {
-            extract_toptable(fit, design, metabo)
+      purrr::pmap(function(fit_ls, design_ls, metabo, population) {
+        list(fit_ls, design_ls, names(design_ls)) |> 
+          purrr::pmap(function(fitls, designls, covar_name){
+            message(paste0("Extracting MWAS results for ", mode, 
+                           " in ", population, " with covariates set: ", 
+                           covar_name, " ..."))
+            list(fitls, designls) |>
+              purrr::pmap(function(fit, design) {
+                extract_toptable(fit, design, metabo)
+              })
           })
       }) 
   }) |>
@@ -326,19 +370,21 @@ summarize_significant <- function(results_list, fdr_threshold = 0.05) {
     purrr::list_rbind()
 }
 
-message("\nC18 MWAS Summary (FDR < 0.05):")
-print(
-  mwas_results_list_c18 |> 
-    purrr::map(~ summarize_significant(.x, fdr_threshold = 0.05))
-)
-
-print(summarize_significant(mwas_results_list_c18))
-
-message("\nHILIC MWAS Summary (FDR < 0.05):")
-print(
-  mwas_results_list_hilic |> 
-    purrr::map(~ summarize_significant(.x, fdr_threshold = 0.05))
-)
+list(
+  list("C18", "HILIC"),
+  list(mwas_results_list_c18, mwas_results_list_hilic)
+) |> 
+  purrr::pmap(function(mode, mwas_list){
+     message(paste0(mode, " MWAS Summary (FDR < 0.05):"))
+     print(
+       mwas_list |> 
+         purrr::map(function(result_list){
+           result_list |> 
+             purrr::map(~ summarize_significant(.x, fdr_threshold = 0.05))
+         })
+     )
+  }) |> 
+  invisible()
 
 
 # =============================================================================
@@ -363,7 +409,7 @@ list(
           as.data.frame() |>
           tibble::rownames_to_column("file.name_new") |>
           dplyr::inner_join(sample_link, by = "file.name_new") |>
-          dplyr::select(-c(rand_id, blood_date, wave)) |>
+          dplyr::select(-c(rand_id, blood_date, wave, batch)) |>
           tibble::column_to_rownames("file.name_new") |>
           as.matrix()
       })
@@ -404,11 +450,20 @@ list(
   purrr::pmap(function(mode, combined_data_list, metabo_list) {
     message(paste0(mode, " sample ordering check:"))
     list(combined_data_list, metabo_list) |> 
-      purrr::pmap(function(combined_data, metabo_matrix) {
-        print(table(combined_data$file.name_new == rownames(metabo_matrix)))
+      purrr::pmap(function(combined_dflist, metabo_matrix) {
+        combined_dflist |> 
+          purrr::map(function(combined_data) {
+             print(
+               table(combined_data$file.name_new == rownames(metabo_matrix))
+               )
+          })
       })
   }) |>
   invisible()
+
+# Set maximum vector size for PLS to avoid memory issues
+# I only got 18GB of RAM, so I set the max vector size to 32GB to be safe
+mem.maxVSize(vsize = 32768)
 
 list(
   list("C18", "HILIC"),
@@ -417,17 +472,21 @@ list(
 ) |>
   purrr::pmap(function(mode, combined_data_list, metabo_list){
     list(combined_data_list, metabo_list, names(combined_data_list)) |> 
-      purrr::pmap(function(combined_data, metabo_matrix, population){
-        message(paste0("Preparing exposure data for PLS in ", mode, 
-                       " for ", population, "..."))
-        exposure_vars |>
-          purrr::set_names() |>
-          purrr::map(function(exp_var) {
-            fit_pls_vip(
-              X = metabo_matrix,
-              Y = combined_data[[exp_var]],
-              ncomp = 3
-            )
+      purrr::pmap(function(combined_dflist, metabo_matrix, population){
+        combined_dflist |> 
+          purrr::imap(function(combined_data, covar_name){
+             message(paste0("Run PLS in ", mode, 
+                            " for ", population, " with covariates set: ", 
+                            covar_name, " ..."))
+            exposure_vars |>
+              purrr::set_names() |>
+              purrr::map(function(exp_var) {
+                fit_pls_vip(
+                  X = metabo_matrix,
+                  Y = combined_data[[exp_var]],
+                  ncomp = 3
+                )
+              })
           })
       })
   }) |>
@@ -438,12 +497,20 @@ list(
 
 # Extract VIP scores ---------------------------------------------------------
 
-list(pls_results_list_c18, pls_results_list_hilic) |> 
-  purrr::map(function(pls_result_list){
+list(
+  list("C18", "HILIC"),
+  list(pls_results_list_c18, pls_results_list_hilic)
+) |> 
+  purrr::pmap(function(mode, pls_result_list){
     pls_result_list |> 
       purrr::imap(function(pls_result_ls, population){
         pls_result_ls |> 
-          purrr::map(~ .x$vip)
+          purrr::imap(function(pls_results, covar_name){
+             message(paste0("Extracting VIP scores for ", population, " in ", 
+                            mode, " with covariates set: ", covar_name, " ..."))
+             pls_results |> 
+               purrr::map(~ .x$vip)
+          })
       })
   }) |> 
   set_names("vip_c18_list", "vip_hilic_list") |> 
@@ -467,13 +534,21 @@ count_high_vip <- function(vip_list, threshold = 2) {
     purrr::list_rbind()
 }
 
+
 message("\nC18 VIP > 2 Summary:")
-print(vip_c18_list |> 
-        purrr::map(~count_high_vip(.x, threshold = 2)))
+print(vip_c18_list |>
+        purrr::map(function(vip_list){
+          vip_list |> 
+            purrr::map(~count_high_vip(.x, threshold = 2))
+        }))
+
 
 message("\nHILIC VIP > 2 Summary:")
-print(vip_hilic_list |> 
-        purrr::map(~count_high_vip(.x, threshold = 2)))
+print(vip_hilic_list |>
+        purrr::map(function(vip_list){
+          vip_list |> 
+            purrr::map(~count_high_vip(.x, threshold = 2))
+        }))
 
 
 # =============================================================================
@@ -504,11 +579,16 @@ list(
 ) |> 
   purrr::pmap(function(mode, mwas_list, vip_list){
     list(mwas_list, vip_list, names(mwas_list)) |> 
-      purrr::pmap(function(mwas_results, vip_results, population){
-        message(paste0("Combining MWAS and VIP results for ", mode, 
-                       " in ", population, "..."))
-        combine_mwas_vip(mwas_results, vip_results) |>
-          purrr::set_names(exposure_vars)
+      purrr::pmap(function(mwas_results_ls, vip_results_ls, population){
+        list(mwas_results_ls, vip_results_ls, names(mwas_results_ls)) |> 
+          purrr::pmap(function(mwas_results, vip_results, covar_name){
+             message(paste0("Combining MWAS and VIP results for ", mode, 
+                            " in ", population, " with covariates set: ", 
+                            covar_name, " ..."))
+            
+             combine_mwas_vip(mwas_results, vip_results) |>
+               purrr::set_names(exposure_vars)
+          })
       })
   }) |> 
   purrr::set_names("combined_results_list_c18", 
@@ -535,10 +615,15 @@ list(
 ) |> 
   purrr::pmap(function(mode, combined_results_list){
     combined_results_list |> 
-      purrr::imap(function(df, population){
-        message(paste0("Filtering significant metabolites for ", mode, 
-                       " in ", population, "..."))
-        filter_significant(df, fdr_thresh = 0.05, vip_thresh = 2)
+      purrr::imap(function(dflist, population){
+        dflist |> 
+          purrr::imap(function(df, covar_name){
+             message(paste0("Filtering significant metabolites for ", mode, 
+                            " in ", population, " with covariates set: ", 
+                            covar_name, " ..."))
+             filter_significant(df, fdr_thresh = 0.05, vip_thresh = 2)
+
+          })
       })
   }) |> 
   purrr::set_names("significant_results_list_c18", 
@@ -556,8 +641,11 @@ list(
 
 names(combined_data_list_c18) |> 
   purrr::walk(function(population){
-    dir.create(here::here("tables", "mwas_results", population), 
-               showWarnings = FALSE, recursive = TRUE)
+    names(covar_list) |> 
+      purrr::walk(function(covar_name){
+        dir.create(here::here("tables", "mwas_results", population, covar_name), 
+                   showWarnings = FALSE, recursive = TRUE)
+      })
   })
 
 # dir.create(here::here("tables", "mwas_results"), 
@@ -576,17 +664,22 @@ list(
   pmap(function(datalist, mode){
     datalist |> 
       purrr::imap(function(dflist, population){
-        message(paste0("Saving combined MWAS + VIP results for ", mode, 
-                       " in ", population, " ..."))
-        
-        dflist |>
-          purrr::imap(function(df, exp_name) {
-            writexl::write_xlsx(
-              df,
-              path = here::here(
-                "tables", "mwas_results", population, 
-                glue::glue("mwas_{mode}_{exp_name}_{population}.xlsx"))
-            )
+        dflist |> 
+          purrr::imap(function(df_ls, covar_name){
+             message(paste0("Saving combined MWAS + VIP results for ", mode, 
+                            " in ", population, " with covariates set: ", 
+                            covar_name, " ..."))
+            df_ls |>
+              purrr::imap(function(df, exp_name) {
+                writexl::write_xlsx(
+                  df,
+                  path = here::here(
+                    "tables", "mwas_results", population, covar_name,
+                    glue::glue(
+                      "mwas_{mode}_{exp_name}_{population}_{covar_name}.xlsx"
+                      ))
+                )
+              })
           })
       })
   })
@@ -601,22 +694,27 @@ list(
   pmap(function(datalist, mode){
     datalist |> 
       purrr::imap(function(dflist, population){
-        message(paste0("Saving significant MWAS + VIP results for ", mode, 
-                       " in ", population, " ..."))
-        dflist |>
-          purrr::imap(function(df, exp_name) {
-            if (nrow(df) > 0) {
-              writexl::write_xlsx(
-                df,
-                path = here::here(
-                  "tables", "mwas_results", population,
-                  glue::glue("mwas_{mode}_{exp_name}_{population}_sig.xlsx"))
-              )
-            }
+        dflist |> 
+          purrr::imap(function(df_ls, covar_name){
+            message(paste0("Saving significant MWAS + VIP results for ", mode, 
+                           " in ", population, " with covariates set: ", 
+                           covar_name, " ..."))
+            df_ls |>
+              purrr::imap(function(df, exp_name) {
+                if (nrow(df) > 0) {
+                  writexl::write_xlsx(
+                    df,
+                    path = here::here(
+                      "tables", "mwas_results", population, covar_name,
+                      glue::glue(
+                        "mwas_{mode}_{exp_name}_{population}_{covar_name}_sig.xlsx"
+                        ))
+                  )
+                }
+              })
           })
       })
   })
-
 
 
 # Save R objects for downstream analysis -------------------------------------
@@ -661,13 +759,22 @@ list(
   mwas_results_list_c18, mwas_results_list_hilic,
   vip_c18_list, vip_hilic_list
 ) |> 
-  purrr::pmap(function(mwas_results_c18, mwas_results_hilic, vip_c18, vip_hilic){
-    create_summary_table(mwas_results_c18, mwas_results_hilic, vip_c18, vip_hilic)
+  purrr::pmap(function(mwas_results_c18_ls, mwas_results_hilic_ls, 
+                       vip_c18_ls, vip_hilic_ls){
+    list(mwas_results_c18_ls, mwas_results_hilic_ls, vip_c18_ls, vip_hilic_ls) |> 
+      purrr::pmap(function(mwas_c18, mwas_hilic, vip_c18, vip_hilic){
+         message("Creating summary table for MWAS results...")
+         create_summary_table(mwas_c18, mwas_hilic, vip_c18, vip_hilic)
+      })
   }) -> summary_table_list
 
 
-message("\nMWAS Summary Table:")
-summary_table_list
+
+summary_table_list |> 
+  purrr::map(function(summary_table_ls, mode){
+    message("\nMWAS Summary Table:")
+    summary_table_ls
+  })
 
 # writexl::write_xlsx(
 #   summary_table,

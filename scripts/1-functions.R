@@ -20,7 +20,7 @@
 
 {
   getwd()
-  options(mc.cores = 9)
+  options(mc.cores = parallelly::availableCores() - 1)
 }
 
 
