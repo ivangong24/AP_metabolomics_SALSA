@@ -31,12 +31,26 @@ load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
 
 # Create output directories --------------------------------------------------
 
+covar_list <- list(
+  covar = quote_all(age_at_blooddraw, gender, edu_year, mh62, 
+                    wave, batch, demcind),
+  
+  covar_sen = quote_all(age_at_blooddraw, gender, edu_year, mh62,
+                        alcohol_drinking, pa3_met_if_ca, nses, 
+                        bmi_at_blooddraw, diab_at_blooddraw, 
+                        wave, batch, demcind)
+  
+)
+
 list("Input", "Output") |> 
   purrr::map(function(dir){
     names(combined_results_list_c18) |> 
       purrr::walk(function(population){
-        dir.create(here::here("metaboAnalyst", dir, population), 
-                   showWarnings = FALSE, recursive = TRUE)
+        names(covar_list) |> 
+          purrr::walk(function(covar_name){
+            dir.create(here::here("metaboAnalyst", dir, population, covar_name), 
+                       showWarnings = FALSE, recursive = TRUE)
+        })
       })
   })
 
@@ -82,7 +96,7 @@ create_mummichog_input <- function(mwas_result, mz_rt_link_df, mode) {
 
 # Create input files for each exposure ---------------------------------------
 
-exposure_vars <- names(combined_results_list_c18[["all"]])
+exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
 
 list(
   list(mwas_results_list_c18, mwas_results_list_hilic),
@@ -91,15 +105,20 @@ list(
 ) |> 
   purrr::pmap(function(mwas_results_list, mz_rt_link_df, mode){
     mwas_results_list |> 
-      purrr::imap(function(mwas_results, population){
-        exposure_vars |>
-          purrr::set_names() |>
-          purrr::map(function(exp) {
-            create_mummichog_input(
-              mwas_results[[exp]],
-              mz_rt_link_df,
-              mode = mode
-            )
+      purrr::imap(function(mwas_results_ls, population){
+        mwas_results_ls |> 
+          purrr::imap(function(mwas_results, covar_name){
+            message(paste0("Creating Mummichog input for: ", 
+                           population, " - ", covar_name, " (", mode, ")"))
+            exposure_vars |>
+              purrr::set_names() |>
+              purrr::map(function(exp) {
+                create_mummichog_input(
+                  mwas_results[[exp]],
+                  mz_rt_link_df,
+                  mode = mode
+                )
+              })
           })
       })
   }) |> 
@@ -110,15 +129,18 @@ list(
 # Combine C18 and HILIC for each exposure ------------------------------------
 
 list(mummichog_input_list_c18, mummichog_input_list_hilic) |> 
-  purrr::pmap(function(c18_list, hilic_list){
-    exposure_vars |>
-      purrr::set_names() |>
-      purrr::map(function(exp) {
-        dplyr::bind_rows(
-          c18_list[[exp]],
-          hilic_list[[exp]]
-        ) |>
-          dplyr::arrange(`p.value`)
+  purrr::pmap(function(c18_list_ls, hilic_list_ls){
+    list(c18_list_ls, hilic_list_ls) |> 
+      purrr::pmap(function(c18_list, hilic_list){
+        exposure_vars |>
+          purrr::set_names() |>
+          purrr::map(function(exp) {
+            dplyr::bind_rows(
+              c18_list[[exp]],
+              hilic_list[[exp]]
+            ) |>
+              dplyr::arrange(`p.value`)
+          })
       })
   }) -> mummichog_input_list_combined
 
@@ -139,17 +161,23 @@ list(mummichog_input_list_c18, mummichog_input_list_hilic) |>
 mummichog_input_list_combined |> 
   purrr::imap(function(dflist, population) {
     dflist |> 
-      purrr::imap(function(df, exp) {
-        message(paste0("Creating Mummichog input for: ", population, " - ", exp))
-        write.table(
-          df,
-          file = here::here("metaboAnalyst", "Input", population,
-                            paste0("mwas_", exp, "_", population, ".txt")),
-          row.names = FALSE,
-          col.names = TRUE,
-          quote = FALSE,
-          sep = "\t"
-        )
+      purrr::imap(function(dfls, covar_name){
+        dfls |> 
+          purrr::imap(function(df, exp) {
+            message(paste0("Creating Mummichog input for: ", 
+                           population, " - ", covar_name, " - ", exp))
+            write.table(
+              df,
+              file = here::here("metaboAnalyst", "Input", population, 
+                                covar_name,
+                                paste0("mwas_", exp, "_", population, 
+                                       "_", covar_name, ".txt")),
+              row.names = FALSE,
+              col.names = TRUE,
+              quote = FALSE,
+              sep = "\t"
+            )
+          })
       })
   })
 
@@ -162,43 +190,57 @@ message("Mummichog input files created in metaboAnalyst/Input/")
 
 #### Create directories in "metaboAnalyst/" for each exposure
 
-exposure_vars <- names(combined_results_list_c18[["all"]])
+exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
 
 names(combined_results_list_c18) |> 
   purrr::map(function(population){
-    exposure_vars %>% 
-      map(function(exp_name){
-        dir.create(here::here("metaboAnalyst", "Output", 
-                              population, exp_name), 
-                   showWarnings = FALSE, recursive = TRUE)
+    names(covar_list) |> 
+      purrr::map(function(covar_name){
+        exposure_vars %>% 
+          map(function(exp_name){
+            dir.create(here::here("metaboAnalyst", "Output", 
+                                  population, covar_name, exp_name), 
+                       showWarnings = FALSE, recursive = TRUE)
+          })
       })
   })
 
 #### Get list of directories and input files for Mummichog analysis
 wd_num_list <- names(combined_results_list_c18) |> 
   purrr::map(function(population){
-    here("metaboAnalyst", "Output", population)|> 
-      list.dirs(recursive = FALSE)
+    names(covar_list) |> 
+      purrr::map(function(covar_name){
+        here("metaboAnalyst", "Output", population, covar_name) |> 
+          list.dirs(recursive = FALSE)
+      })
   })
 
-sub_dir_list <- names(combined_results_list_c18)
+sub_dir_list1 <- names(combined_results_list_c18)
+
+sub_dir_list2 <- names(covar_list)
 
 
 input_list <- names(combined_results_list_c18) |> 
   purrr::map(function(population){
-    here("metaboAnalyst", "Input", population)|> 
-      list.files(full.names = TRUE, recursive = FALSE) |> 
-      basename()
+     names(covar_list) |> 
+      purrr::map(function(covar_name){
+        here("metaboAnalyst", "Input", population, covar_name)|> 
+          list.files(full.names = TRUE, recursive = FALSE) |> 
+          basename()
+      })
   })
 
   
 pathway_name_list <- input_list |>  
-  purrr::map(function(files){
-    files |> 
-      str_remove(".txt") |>  
-      map(function(name){
-        str_c("p_pathway","_", name)
-        })
+  purrr::map(function(files_list){
+    files_list |> 
+      purrr::map(function(files){
+        files |> 
+          str_remove(".txt") |>  
+          map(function(name){
+            str_c("p_pathway","_", name)
+          })
+      })
   })
 
 
@@ -214,17 +256,21 @@ message("Running Mummichog pathway analysis...")
 
 system.time({
   list(wd_num_list,
-       sub_dir_list, 
+       sub_dir_list1, 
        input_list,
        pathway_name_list) |> 
-    purrr::pmap(function(wd_mumls, sub_dir, inputls, pathway_name_ls){
-      list(wd_mumls, inputls) |>  
-        purrr::pmap(function(wd_mum, input){
-          message(paste0("Running Mummichog pathway analysis in ", sub_dir, " using ", input))
-          mummichog(wd_mum, input, sub_dir)
-        }) %>% 
-        purrr::set_names(pathway_name_ls) |> 
-        list2env(.GlobalEnv)
+    purrr::pmap(function(wd_mum_ls, sub_dir1, input_ls, pathway_name_ls){
+      list(wd_mum_ls, sub_dir_list2, input_ls, pathway_name_ls) |>  
+        purrr::pmap(function(wd_mumls, sub_dir2, inputls, pathway_namels){
+          list(wd_mumls, inputls) |> 
+            purrr::pmap(function(wd_mum, input){
+              message(paste0("Running Mummichog pathway analysis in ", 
+                             sub_dir1, " ", sub_dir2, " using ", input, " ---"))
+              mummichog(wd_mum, input, sub_dir1, sub_dir2)
+            }) %>% 
+            purrr::set_names(pathway_namels) |> 
+            list2env(.GlobalEnv)
+        })
     })
 })
 
@@ -361,24 +407,32 @@ source(here::here("scripts", "metapone_pathway.R"))
 
 names(combined_results_list_c18) |>
   purrr::walk(function(population) {
-    dir.create(here::here("Metapone", "Input", population),
-               showWarnings = FALSE, recursive = TRUE)
+    names(covar_list) |> 
+      purrr::walk(function(covar_name) {
+        dir.create(here::here("Metapone", "Input", population, covar_name),
+                   showWarnings = FALSE, recursive = TRUE)
+      })
   })
 
 mummichog_input_list_combined |>
   purrr::imap(function(dflist, population) {
     dflist |>
-      purrr::imap(function(df, exp) {
-        message(paste0("Creating Metapone input for: ", population, " - ", exp))
-        write.table(
-          df,
-          file = here::here("Metapone", "Input", population,
-                            paste0("mwas_", exp, "_", population, ".txt")),
-          row.names = FALSE,
-          col.names = TRUE,
-          quote = FALSE,
-          sep = "\t"
-        )
+      purrr::imap(function(dfls, covar_name){
+        dfls |> 
+          purrr::imap(function(df, exp) {
+            message(paste0("Creating Metapone input for: ", 
+                           population, " - ", covar_name, " - ", exp))
+            write.table(
+              df,
+              file = here::here("Metapone", "Input", population, covar_name,
+                                paste0("mwas_", exp, "_", 
+                                       population, "_", covar_name, ".txt")),
+              row.names = FALSE,
+              col.names = TRUE,
+              quote = FALSE,
+              sep = "\t"
+            )
+          })
       })
   })
 
@@ -392,34 +446,41 @@ system.time({
   names(combined_results_list_c18) |>
     purrr::set_names() |>
     purrr::map(function(population) {
-      input_dir <- here::here("Metapone", "Input", population)
-      input_files <- list.files(input_dir, pattern = "\\.txt$",
-                                full.names = TRUE)
+      names(covar_list) |> 
+        purrr::map(function(covar_name) {
+          input_dir <- here::here("Metapone", "Input", population, covar_name)
+          input_files <- list.files(input_dir, pattern = "\\.txt$",
+                                    full.names = TRUE)
+          input_files |>
+            purrr::set_names(
+              basename(input_files) |>
+                stringr::str_remove("\\.txt$") |>
+                stringr::str_remove(paste0("^mwas_")) |>
+                stringr::str_remove(paste0("_", population, 
+                                           "_", covar_name, "$"))
+            ) |>
+            purrr::imap(function(input_file, exp_name) {
+              message(paste0("\n---Running metapone for: ", 
+                             exp_name, " (", population, " - ", 
+                             covar_name, ") ---"))
 
-      input_files |>
-        purrr::set_names(
-          basename(input_files) |>
-            stringr::str_remove("\\.txt$") |>
-            stringr::str_remove(paste0("^mwas_")) |>
-            stringr::str_remove(paste0("_", population, "$"))
-        ) |>
-        purrr::imap(function(input_file, exp_name) {
-          message(paste0("\n--- metapone: ", population, " - ", exp_name, " ---"))
-          tryCatch(
-            run_metapone(
-              input_file = input_file,
-              p_cutoff = 0.05,
-              num_permutations = 200,
-              match_tol_ppm = 10,
-              pos.adductlist = c("M+H", "M+Na", "M+"),
-              neg.adductlist = c("M-H", "M-2H", "M-H2O-H")
-            ),
-            error = function(e) {
-              warning(paste0("metapone failed for ", exp_name,
-                             " (", population, "): ", e$message))
-              return(NULL)
-            }
-          )
+              tryCatch(
+                run_metapone(
+                  input_file = input_file,
+                  p_cutoff = 0.05,
+                  num_permutations = 200,
+                  match_tol_ppm = 10,
+                  pos.adductlist = c("M+H", "M+Na", "M+"),
+                  neg.adductlist = c("M-H", "M-2H", "M-H2O-H")
+                ),
+                error = function(e) {
+                  warning(paste0("metapone failed for ", exp_name,
+                                 " (", population, " - ", 
+                                 covar_name, "): ", e$message))
+                  return(NULL)
+                }
+              )
+            })
         })
     }) -> metapone_results_combined
 })

@@ -400,9 +400,12 @@ list(
     sig_mwas_df_list |>
       purrr::map(function(dflist) {
         dflist |> 
-          purrr::map(function(df){
-            df |>
-              dplyr::left_join(annot_wide, by = c("met" = "id"))
+          purrr::map(function(dfls){
+            dfls |>
+              purrr::map(function(df){
+                df |> 
+                  dplyr::left_join(annot_wide, by = c("met" = "id"))
+              })
           })
       })
   }) |>
@@ -425,16 +428,20 @@ list(
     datalist |> 
       purrr::imap(function(dflist, population){
         dflist |>
-          purrr::imap(function(df, exp_name) {
-            df |>
-              writexl::write_xlsx(
-                here::here(
-                  "tables", "mwas_results", population, 
-                  glue::glue("mwas_{mode}_{exp_name}_{population}_sig_annotated.xlsx"))
-              )
-            message(paste0("MWAS results with annotation for ",
-                           exp_name, " ", mode, " in ", population,
-                           " saved successfully!"))
+          purrr::imap(function(dfls, covar_name){
+            dfls |> 
+              purrr::imap(function(df, exp_name) {
+                df |>
+                  writexl::write_xlsx(
+                    here::here(
+                      "tables", "mwas_results", population, covar_name,
+                      glue::glue("mwas_{mode}_{exp_name}_{population}_{covar_name}_sig_annotated.xlsx"))
+                  )
+                message(paste0("MWAS results with annotation for ",
+                               exp_name, " ", mode, " in ", population, 
+                               "with covariate ", covar_name,
+                               " saved successfully!"))
+              })
           })
       })
   })
@@ -443,7 +450,7 @@ list(
 # Save R objects for downstream analysis -------------------------------------
 
 save(mwas_annotated_list_c18, mwas_annotated_list_hilic,
-     file = here::here("data", "metabolomics", "processed",
+     file = here::here("data", "metabolomics", "results",
                        "mwas_annotation.RData"))
 
 

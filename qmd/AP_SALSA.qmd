@@ -33,9 +33,9 @@ Air pollution exposure has been linked to various adverse health outcomes, inclu
 
 This study investigates the association between air toxicants exposure and the metabolomic profile among participants of the Sacramento Area Latino Study on Aging (SALSA). We conducted a metabolome-wide association study (MWAS) to identify metabolites associated with exposure to multiple air pollutants, including:
 
-- **Criteria air pollutants**: PM2.5, NO2, NOx, O3
+- **Criteria air pollutants**: PM2.5, NO2, NOx
 - **Air toxics**: Benzene, 1,3-Butadiene
-- **Metals**: Chromium, Lead, Nickel, Zinc
+- **Metals**: Chromium, Lead, Nickel
 
 # Methods
 
@@ -45,23 +45,23 @@ The Sacramento Area Latino Study on Aging (SALSA) is a population-based, prospec
 
 Participants were included in this analysis if they:
 
-- Had a baseline visit date
-- Did not have cognitive impairment no dementia (CIND) at baseline
-- Had at least one follow-up visit or non-zero survival time
+<!-- - Had a baseline visit date -->
+<!-- - Did not have cognitive impairment no dementia (CIND) at baseline -->
+<!-- - Had at least one follow-up visit or non-zero survival time -->
 - Had metabolomics data
 
 ## Air toxicants exposure assessment
 
-Air toxicants exposure was estimated using geocoded residential addresses linked to modeled pollutant concentrations. For each participant, we calculated the **5-year average exposure** prior to their baseline enrollment date for each air toxicant.
+Air toxicants exposure was estimated using geocoded residential addresses linked to modeled pollutant concentrations. For each participant, we calculated the **5-year average exposure** prior to their blood draw date for each air toxicant.
 
 **Data processing steps:**
 
 1. Linked participant addresses to pollutant concentration data
-3. Calculated 5-year pre-baseline average exposure for each participant
+3. Calculated 5-year pre-blood draw average exposure for each participant
 4. Applied winsorization (top 1%) to remove extreme values (using percentile-based trimming)
 5. Z-transformed all exposure variables (centered and scaled) for comparability across pollutants
 
-The final exposure variables include: benzene, 1,3-butadiene, chromium, lead, nickel, NO2, NOx, O3, PM2.5, and zinc.
+The final exposure variables include: benzene, 1,3-butadiene, chromium, lead, nickel, NO2, NOx, PM2.5.
 
 ## Metabolomics data processing
 
@@ -93,6 +93,7 @@ We employed a two-pronged approach to identify metabolites associated with air t
 
 **1. Linear modeling with limma:**
 
+- Calculated correlations between the replicated samples
 - Fitted linear models for each metabolite against each exposure variable
 - Applied empirical Bayes moderation to improve variance estimates
 - Adjusted p-values using Benjamini-Hochberg FDR correction
@@ -215,9 +216,6 @@ The following combined panel figures show volcano plots and VIP scatter plots fo
 
 ![Combined panel for NOx](figures/combined_panel_exp_nox.png){width=100%}
 
-#### O3
-
-![Combined panel for O3](figures/combined_panel_exp_o3.png){width=100%}
 
 ### Air Toxics
 
@@ -243,9 +241,6 @@ The following combined panel figures show volcano plots and VIP scatter plots fo
 
 ![Combined panel for Nickel](figures/combined_panel_exp_nickel.png){width=100%}
 
-#### Zinc
-
-![Combined panel for Zinc](figures/combined_panel_exp_zinc.png){width=100%}
 
 ## Correlation of Effect Sizes Across Exposures
 

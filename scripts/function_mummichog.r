@@ -1,12 +1,12 @@
 library(MetaboAnalystR)
 library(ggrepel)
 
-mummichog <- function(wd_mum, input, sub_dir) {
+mummichog <- function(wd_mum, input, sub_dir1, sub_dir2) {
   wd <- getwd()
   setwd(wd_mum)
   
   main_dir <- sub("(.*metaboAnalyst).*", "\\1", normalizePath(getwd()))
-  input_path <- file.path(list.dirs(here::here(main_dir, "Input", sub_dir)), 
+  input_path <- file.path(list.dirs(here::here(main_dir, "Input", sub_dir1, sub_dir2)), 
                           input)
   # input_path <- paste("../Input/", input, sep = "")
   
@@ -19,6 +19,7 @@ mummichog <- function(wd_mum, input, sub_dir) {
   mSet<-Setup.AdductData(mSet, add.vec);
   mSet<-PerformAdductMapping(mSet, "mixed")
   mSet<-SetPeakEnrichMethod(mSet, "mum", "v2")
+  # pval <- sort(mSet[["dataSet"]][["mummi.proc"]][["p.value"]])[ceiling(length(mSet[["dataSet"]][["mummi.proc"]][["p.value"]])*0.1)]
   mSet<-SetMummichogPval(mSet, 0.1)
   mSet<-PerformPSEA(mSet, "hsa_mfn", "current", 3 , 100)
   mSet<-PlotPeaks2Paths(mSet, "peaks_to_paths_0_", "png", 300, width = 10)
