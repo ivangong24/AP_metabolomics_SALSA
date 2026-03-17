@@ -558,68 +558,12 @@ message("https://www.metaboanalyst.ca/")
 message("Input files are located in: metaboAnalyst/Input/")
 
 
-# =============================================================================
-# SECTION 5: PATHWAY VISUALIZATION
-# =============================================================================
-
-# Function to create pathway enrichment plot ---------------------------------
-
-create_pathway_barplot <- function(pathway_df, exposure_name, top_n = 20) {
-  if (is.null(pathway_df) || nrow(pathway_df) == 0) return(NULL)
-
-  plot_data <- pathway_df |>
-    dplyr::slice_head(n = top_n) |>
-    dplyr::mutate(
-      pathway = forcats::fct_reorder(pathway, -P.Value),
-      neg_log10_p = -log10(P.Value)
-    )
-
-  p <- ggplot(plot_data, aes(x = pathway, y = neg_log10_p)) +
-    geom_bar(stat = "identity", fill = "#3B4CC0", alpha = 0.8) +
-    coord_flip() +
-    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
-    labs(
-      title = paste0("Top Enriched Pathways - ", gsub("exp_", "", exposure_name)),
-      x = "",
-      y = expression(-log[10](P-value))
-    ) +
-    theme_classic() +
-    theme(
-      plot.title = element_text(face = "bold", size = 14),
-      axis.text.y = element_text(size = 10),
-      axis.title.x = element_text(face = "bold", size = 12)
-    )
-
-  return(p)
-}
-
-
-# Create pathway plots if results exist --------------------------------------
-
-if (exists("pathway_results") && !is.null(pathway_results)) {
-  dir.create(here::here("figures", "pathway"), showWarnings = FALSE, recursive = TRUE)
-
-  purrr::iwalk(pathway_results, function(res, exp) {
-    if (!is.null(res$mummichog) && nrow(res$mummichog) > 0) {
-      p <- create_pathway_barplot(res$mummichog, exp)
-      if (!is.null(p)) {
-        ggsave(
-          filename = here::here("figures", "pathway",
-                                glue::glue("pathway_mummichog_{exp}.png")),
-          plot = p,
-          width = 10, height = 8, dpi = 300
-        )
-      }
-    }
-  })
-}
-
+# Output message ----------------------------------------------------------
 
 message("\nPathway analysis completed!")
 message("Results saved to:")
 message("  - metaboAnalyst/Input/ (input files)")
 message("  - metaboAnalyst/Output/ (analysis results)")
 message("  - tables/mwas_results/ (summary tables)")
-message("  - figures/pathway/ (visualizations)")
 
 #--------------------------------End of the code--------------------------------

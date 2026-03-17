@@ -65,6 +65,8 @@
     "DataExplorer",   #create a report of the data: create_report()
     "patchwork",      #combines plots: wrap_plots(), plot_layout()
     "plotly",         #create interactive plots: ggplotly()
+    "pheatmap",       #create pretty heatmap: pheatmap(),
+    "RColorBrewer",    #color palette for heatmap: brewer.pal()
     
     # Other great packages
     "glue",           #replaces paste: glue()

@@ -22,78 +22,100 @@
 ## ---------------------------
 
 # Load required packages -----------------------------------------------------
+source(here::here("scripts", "1-functions.R"))
 
-library(tidyverse)
-library(ggrepel)
-library(ggpubr)
-library(patchwork)
-library(pheatmap)
-library(RColorBrewer)
-library(ggnewscale)
+# Load results ---------------------------------------------------------------
 
-# Load MWAS results ----------------------------------------------------------
+load(here::here("data", "metabolomics", "results", 
+                "mwas_results_all.RData"))
 
-load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
+load(here::here("data", "metabolomics", "results",
+                "mwas_annotation.RData"))
+
+load(here::here("data", "metabolomics", "results",
+                "metapone_results_all.RData"))
 
 
-load(here::here("data", "metabolomics", 
-                "processed", "mwas_annotation.RData"))
+covar_list <- list(
+  covar = quote_all(age_at_blooddraw, gender, edu_year, mh62, 
+                    wave, batch, demcind),
+  
+  covar_sen = quote_all(age_at_blooddraw, gender, edu_year, mh62,
+                        alcohol_drinking, pa3_met_if_ca, nses, 
+                        bmi_at_blooddraw, diab_at_blooddraw, 
+                        wave, batch, demcind)
+  
+)
 
+exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
 
 # Create output directory
-dir.create(here::here("figures", "mwas"), 
-           showWarnings = FALSE, recursive = TRUE)
+names(combined_results_list_c18) |> 
+  purrr::map(function(population){
+    names(covar_list) |> 
+      purrr::map(function(covar_names){
+        exposure_vars |> 
+          purrr::map(function(exposure){
+            dir.create(here::here("figures", "mwas", population, 
+                                  covar_names, exposure), 
+                       showWarnings = FALSE, recursive = TRUE)
+          })
+      })
+  })
 
 
 # =============================================================================
-# SECTION 1: VOLCANO PLOTS
+# SECTION 1: VOLCANO PLOTS (Combined C18 + HILIC)
 # =============================================================================
 
-# Function to create volcano plot --------------------------------------------
+# Function to create combined volcano plot ------------------------------------
 
-create_volcano_plot <- function(mwas_result, vip_result, annotation_result, 
+create_volcano_plot <- function(mwas_result_c18, mwas_result_hilic,
+                                annotation_result_c18, annotation_result_hilic,
                                 exposure_name,
-                                 column_type = "C18",
-                                 fdr_threshold = 0.05,
-                                 vip_threshold = 2,
-                                 n_labels = 10) {
+                                fdr_threshold = 0.05,
+                                n_labels = 10) {
 
-  # Prepare data for plotting
-  plot_data <- mwas_result |>
-    tibble::rownames_to_column("met") |>
-    dplyr::left_join(
-      vip_result |>
-        tibble::rownames_to_column("met") |>
-        dplyr::select(met, VIP = comp1),
-      by = "met"
-    ) |>
-    dplyr::left_join(
-      annotation_result |>
-        dplyr::select(met, chemical_id, compound, multiple_match, reference),
-      by = "met"
-    ) |>
-    dplyr::group_by(met) |>
-    dplyr::slice_head(n = 1) |>  # In case of multiple matches
-    dplyr::ungroup() |>
+  # Helper to prepare data for one column type
+  prep_data <- function(mwas_result, annotation_result, column_type) {
+    mwas_result |>
+      tibble::rownames_to_column("met") |>
+      dplyr::left_join(
+        annotation_result |>
+          dplyr::select(met, chemical_id, compound, multiple_match, reference),
+        by = "met"
+      ) |>
+      dplyr::group_by(met) |>
+      dplyr::slice_head(n = 1) |>
+      dplyr::ungroup() |>
+      dplyr::mutate(column_type = column_type)
+  }
+
+  # Combine C18 and HILIC data
+  plot_data <- dplyr::bind_rows(
+    prep_data(mwas_result_c18, annotation_result_c18, "C18/neg-"),
+    prep_data(mwas_result_hilic, annotation_result_hilic, "HILIC/pos+")
+  ) |>
     dplyr::mutate(
       neg_log10_p = -log10(P.Value),
       significant = case_when(
-        adj.P.Val < fdr_threshold & VIP > vip_threshold ~ "FDR < 0.05 & VIP>2",
-        adj.P.Val < fdr_threshold & logFC ~ "FDR < 0.05 only",
-        VIP > vip_threshold ~ "VIP>2 only",
+        adj.P.Val < fdr_threshold ~ "FDR < 0.05",
+        P.Value < 0.05 ~ "P < 0.05",
         TRUE ~ "NS"
-      )
+      ),
+      significant = factor(significant,
+                           levels = c("FDR < 0.05", "P < 0.05", "NS"))
     )
 
-  # Get top metabolites for labeling (by VIP or p-value)
+  # Get top metabolites for labeling (by p-value)
   top_mets <- plot_data |>
     dplyr::filter(
-      is.finite(VIP), !is.na(compound), 
-      multiple_match == FALSE | reference == "In House Library", compound != "",
-      adj.P.Val < fdr_threshold | VIP > vip_threshold) |>
-    # dplyr::arrange(P.Value) |>
-    # dplyr::slice_head(n = n_labels) |>
-    dplyr::slice_max(order_by = VIP, n = n_labels, with_ties = FALSE) |>
+      !is.na(compound), compound != "",
+      # multiple_match == FALSE, 
+      P.Value < 0.05) |>
+    dplyr::arrange(P.Value) |>
+    dplyr::slice_head(n = n_labels) |>
+    # dplyr::slice_max(order_by = -P.Value, n = n_labels, with_ties = FALSE) |>
     dplyr::pull(met)
 
   plot_data <- plot_data |>
@@ -104,6 +126,7 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
     # Non-significant points
     geom_point(
       data = . %>% filter(significant == "NS"),
+      aes(shape = column_type),
       color = "grey70",
       alpha = 0.5,
       size = 1.5
@@ -111,20 +134,23 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
     # Significant points
     geom_point(
       data = . %>% filter(significant != "NS"),
-      aes(color = significant),
+      aes(color = significant, shape = column_type),
       alpha = 0.7,
       size = 2.5
     ) +
     scale_color_manual(
       values = c(
-        "FDR < 0.05 & VIP>2" = "#FB9A99",
-        "FDR < 0.05 only" = "#FDB462",
-        "VIP>2 only" = "#984EA3"
+        "FDR < 0.05" = "#BE3F42",
+        "P < 0.05" = "#DE9960"
       ),
       name = "Significance"
     ) +
+    scale_shape_manual(
+      values = c("C18/neg-" = 16, "HILIC/pos+" = 17),
+      name = "Column"
+    ) +
     # Add labels
-    geom_text_repel(
+    geom_label_repel(
       aes(label = label),
       size = 3,
       max.overlaps = 20,
@@ -141,7 +167,7 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
     ) +
     # Labels
     labs(
-      title = paste0(column_type, " - ", gsub("exp_", "", exposure_name)),
+      title = gsub("exp_", "", exposure_name),
       x = "Log Fold Change",
       y = expression(-log[10](P-value))
     ) +
@@ -160,204 +186,492 @@ create_volcano_plot <- function(mwas_result, vip_result, annotation_result,
 }
 
 
-# Create volcano plots for all exposures -------------------------------------
+# Create volcano plots for all populations x covariate sets ------------------
 
-exposure_vars <- names(mwas_results_c18)
+population_names <- names(mwas_results_list_c18)
+covar_names <- names(covar_list)
 
-## C18 volcano plots
-volcano_c18 <- exposure_vars |>
+volcano_plots <- population_names |>
   purrr::set_names() |>
-  purrr::map(function(exp) {
-    create_volcano_plot(
-      mwas_results_c18[[exp]],
-      vip_c18[[exp]],
-      mwas_c18_annotated[[exp]],
-      exposure_name = exp,
-      column_type = "C18"
-    )
-  })
-
-## HILIC volcano plots
-volcano_hilic <- exposure_vars |>
-  purrr::set_names() |>
-  purrr::map(function(exp) {
-    create_volcano_plot(
-      mwas_results_hilic[[exp]],
-      vip_hilic[[exp]],
-      mwas_hilic_annotated[[exp]],
-      exposure_name = exp,
-      column_type = "HILIC"
-    )
+  purrr::map(function(pop) {
+    covar_names |>
+      purrr::set_names() |>
+      purrr::map(function(cov) {
+        exposure_vars |>
+          purrr::set_names() |>
+          purrr::map(function(exp) {
+            create_volcano_plot(
+              mwas_result_c18 = mwas_results_list_c18[[pop]][[cov]][[exp]],
+              mwas_result_hilic = mwas_results_list_hilic[[pop]][[cov]][[exp]],
+              annotation_result_c18 = mwas_annotated_list_c18[[pop]][[cov]][[exp]],
+              annotation_result_hilic = mwas_annotated_list_hilic[[pop]][[cov]][[exp]],
+              exposure_name = exp
+            )
+          })
+      })
   })
 
 
-# Save individual volcano plots ----------------------------------------------
+# Save volcano plots ---------------------------------------------------------
 
-purrr::iwalk(volcano_c18, function(p, exp) {
-  ggsave(
-    filename = here::here("figures", "mwas",
-                          glue::glue("volcano_c18_{exp}.png")),
-    plot = p,
-    width = 8, height = 6, dpi = 300
-  )
-})
-
-purrr::iwalk(volcano_hilic, function(p, exp) {
-  ggsave(
-    filename = here::here("figures", "mwas",
-                          glue::glue("volcano_hilic_{exp}.png")),
-    plot = p,
-    width = 8, height = 6, dpi = 300
-  )
-})
+population_names |>
+  purrr::walk(function(pop) {
+    covar_names |>
+      purrr::walk(function(cov) {
+        purrr::iwalk(volcano_plots[[pop]][[cov]], function(p, exp) {
+          ggsave(
+            filename = here::here("figures", "mwas", pop, cov, exp,
+                                  glue::glue("volcano_{exp}.png")),
+            plot = p,
+            width = 10, height = 6, dpi = 300
+          )
+        })
+      })
+  })
 
 
 # =============================================================================
-# SECTION 2: VIP VS LOGFC SCATTER PLOTS
+# SECTION 2: LOGFC COMPARISON SCATTER PLOTS (Combined C18 + HILIC)
 # =============================================================================
 
-# Function to create VIP vs logFC scatter plot -------------------------------
+# 2a. Function to compare logFC: demcind vs all & no demcind vs all ----------
+# Faceted plot, only showing points where P < 0.05 in "all"
+# Combines C18 and HILIC with different shapes
 
-create_vip_scatter <- function(mwas_result, vip_result, annotation_result,
-                               exposure_name,
-                                column_type = "C18",
-                                vip_threshold = 2,
-                                n_labels = 10) {
+create_population_scatter <- function(mwas_list_c18, mwas_list_hilic,
+                                      covar_set, exposure_name) {
 
-  # Prepare data
-  plot_data <- mwas_result |>
-    tibble::rownames_to_column("met") |>
-    dplyr::left_join(
-      vip_result |>
-        tibble::rownames_to_column("met") |>
-        dplyr::select(met, VIP = comp1),
-      by = "met"
-    ) |>
-    dplyr::left_join(
-      annotation_result |>
-        dplyr::select(met, chemical_id, compound, multiple_match, reference),
-      by = "met"
-    ) |>
-    dplyr::group_by(met) |>
-    dplyr::slice_head(n = 1) |>  # In case of multiple matches
-    dplyr::ungroup() |>
-    dplyr::mutate(
-      category = case_when(
-        VIP > vip_threshold & logFC > 0 ~ "VIP>2 & Positive",
-        VIP > vip_threshold & logFC < 0 ~ "VIP>2 & Negative",
-        TRUE ~ "VIP<=2"
+  # Helper to prep data for one column type
+  prep_pop_data <- function(mwas_list, column_type) {
+    df_all <- mwas_list[["all"]][[covar_set]][[exposure_name]] |>
+      tibble::rownames_to_column("met") |>
+      dplyr::select(met, logFC_all = logFC, P.Value_all = P.Value)
+
+    df_demcind <- mwas_list[["demcind"]][[covar_set]][[exposure_name]] |>
+      tibble::rownames_to_column("met") |>
+      dplyr::select(met, logFC_demcind = logFC, P.Value_demcind = P.Value)
+
+    df_no_demcind <- mwas_list[["no demcind"]][[covar_set]][[exposure_name]] |>
+      tibble::rownames_to_column("met") |>
+      dplyr::select(met, logFC_no_demcind = logFC, P.Value_no_demcind = P.Value)
+
+    # Join all three populations
+    df_all |>
+      dplyr::inner_join(df_demcind, by = "met") |>
+      dplyr::inner_join(df_no_demcind, by = "met") |>
+      # Classify significance based on demcind and no demcind
+      dplyr::mutate(
+        significant = case_when(
+          P.Value_demcind < 0.05 & P.Value_no_demcind < 0.05 ~ "Both P < 0.05",
+          P.Value_demcind < 0.05 ~ "demcind P < 0.05",
+          P.Value_no_demcind < 0.05 ~ "no demcind P < 0.05",
+          TRUE ~ "NS"
+        )
+      ) |>
+      # Pivot to long for faceting
+      tidyr::pivot_longer(
+        cols = c(logFC_demcind, logFC_no_demcind),
+        names_to = "comparison",
+        values_to = "logFC_sub",
+        names_prefix = "logFC_"
+      ) |>
+      dplyr::mutate(
+        comparison = dplyr::recode(comparison,
+                                   "demcind" = "demcind vs all",
+                                   "no_demcind" = "no demcind vs all"),
+        column_type = column_type
       )
+  }
+
+  plot_data <- dplyr::bind_rows(
+    prep_pop_data(mwas_list_c18, "C18/neg-"),
+    prep_pop_data(mwas_list_hilic, "HILIC/pos+")
+  ) |>
+    # Only keep points where P < 0.05 in "all"
+    dplyr::filter(P.Value_all < 0.05) |>
+    dplyr::mutate(
+      significant = factor(significant,
+                           levels = c("Both P < 0.05",
+                                      "demcind P < 0.05",
+                                      "no demcind P < 0.05",
+                                      "NS"))
     )
 
-  # Top metabolites for labeling
-  top_mets <- plot_data |>
-    dplyr::filter(
-      is.finite(VIP), !is.na(compound), 
-      multiple_match == FALSE | reference == "In House Library",
-      compound != "",
-      VIP > vip_threshold) |>
-    # dplyr::arrange(P.Value) |>
-    # dplyr::slice_head(n = n_labels) |>
-    dplyr::slice_max(order_by = VIP, n = n_labels, with_ties = FALSE) |>
-    dplyr::pull(met)
-  
-  plot_data <- plot_data |>
-    dplyr::mutate(label = ifelse(met %in% top_mets, compound, ""))
-  
+  # Per-facet correlation on P < 0.05 points (all points shown are P<0.05 in all)
+  # cor_labels <- plot_data |>
+  #   dplyr::group_by(comparison) |>
+  #   dplyr::summarise(
+  #     cor_test = list(cor.test(logFC_all, logFC_sub, use = "complete.obs")),
+  #     .groups = "drop"
+  #   ) |>
+  #   dplyr::mutate(
+  #     r = purrr::map_dbl(cor_test, ~ .x$estimate),
+  #     p_val = purrr::map_dbl(cor_test, ~ .x$p.value),
+  #     label = paste0("r = ", round(r, 3), "\np = ",
+  #                    ifelse(p_val < 0.001,
+  #                           formatC(p_val, format = "e", digits = 2),
+  #                           round(p_val, 3)))
+  #   )
 
-
-  # Create plot
-  p <- ggplot(plot_data, aes(x = logFC, y = VIP)) +
+  p <- ggplot(plot_data, aes(x = logFC_all, y = logFC_sub)) +
+    # NS points
     geom_point(
-      data = . %>% filter(category == "VIP<=2"),
-      color = "grey70",
-      alpha = 0.5,
-      size = 1.5
+      data = . %>% filter(significant == "NS"),
+      aes(shape = column_type),
+      color = "grey70", alpha = 0.5, size = 1.5
     ) +
+    # Significant points
     geom_point(
-      data = . %>% filter(category != "VIP<=2"),
-      aes(color = category),
-      alpha = 0.7,
-      size = 2.5
+      data = . %>% filter(significant != "NS"),
+      aes(color = significant, shape = column_type),
+      alpha = 0.7, size = 2
+    ) +
+    # Fit line on all displayed points (all P < 0.05 in "all")
+    geom_smooth(
+      method = "lm", se = TRUE,
+      color = "black", linewidth = 0.8, linetype = "solid",
+      alpha = 0.2
     ) +
     scale_color_manual(
       values = c(
-        "VIP>2 & Positive" = "#E41A1C",
-        "VIP>2 & Negative" = "#377EB8"
+        "Both P < 0.05" = "#B73F42",
+        "demcind P < 0.05" = "#DE9960",
+        "no demcind P < 0.05" = "#436C85"
       ),
-      name = "Category"
+      name = "Significance"
     ) +
-    geom_text_repel(
-      aes(label = label),
-      size = 3,
-      max.overlaps = 15,
-      box.padding = 0.5
+    scale_shape_manual(
+      values = c("C18/neg-" = 16, "HILIC/pos+" = 17),
+      name = "Column"
     ) +
-    geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-    geom_hline(yintercept = vip_threshold, linetype = "solid", color = "red") +
+    geom_hline(yintercept = 0, linetype = "dotted", color = "grey60") +
+    geom_vline(xintercept = 0, linetype = "dotted", color = "grey60") +
+    # Per-facet correlation labels
+    ggpubr::stat_cor(
+      method = "pearson",
+      label.x.npc = "left", label.y.npc = "top",
+      size = 4, fontface = "italic"
+    ) +
+    # geom_text(
+    #   data = cor_labels,
+    #   aes(x = Inf, y = -Inf, label = label),
+    #   hjust = 1.1, vjust = -0.3, size = 4, fontface = "italic",
+    #   inherit.aes = FALSE
+    # ) +
+    facet_wrap(~ comparison) +
     labs(
-      title = paste0(column_type, " - ", gsub("exp_", "", exposure_name)),
-      x = "Log Fold Change",
-      y = "VIP Score (Component 1)"
+      title = gsub("exp_", "", exposure_name),
+      x = "MWAS beta coefficients among all participants",
+      y = "MWAS beta coefficients among the subgroup population"
     ) +
     theme_classic() +
     theme(
       plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
       axis.title = element_text(face = "bold", size = 12),
       axis.text = element_text(size = 10),
-      legend.position = "right"
+      strip.text = element_text(face = "bold", size = 12),
+      legend.position = "right",
+      legend.title = element_text(face = "bold", size = 10),
+      legend.text = element_text(size = 9)
     )
 
   return(p)
 }
 
 
-# Create VIP scatter plots for all exposures ---------------------------------
+# 2b. Function to compare logFC between two covariate sets -------------------
+# Combines C18 and HILIC with different shapes
 
-vip_scatter_c18 <- exposure_vars |>
-  purrr::set_names() |>
-  purrr::map(function(exp) {
-    create_vip_scatter(
-      mwas_results_c18[[exp]],
-      vip_c18[[exp]],
-      mwas_c18_annotated[[exp]],
-      exposure_name = exp,
-      column_type = "C18"
+create_covariate_scatter <- function(mwas_list_c18, mwas_list_hilic,
+                                     population, cov1, cov2,
+                                     exposure_name) {
+
+  # Helper to prep and join data for one column type
+  prep_cov_data <- function(mwas_list, column_type) {
+    df1 <- mwas_list[[population]][[cov1]][[exposure_name]] |>
+      tibble::rownames_to_column("met") |>
+      dplyr::select(met, logFC_cov1 = logFC, P.Value_cov1 = P.Value)
+
+    df2 <- mwas_list[[population]][[cov2]][[exposure_name]] |>
+      tibble::rownames_to_column("met") |>
+      dplyr::select(met, logFC_cov2 = logFC, P.Value_cov2 = P.Value)
+
+    dplyr::inner_join(df1, df2, by = "met") |>
+      dplyr::mutate(column_type = column_type)
+  }
+
+  plot_data <- dplyr::bind_rows(
+    prep_cov_data(mwas_list_c18, "C18/neg-"),
+    prep_cov_data(mwas_list_hilic, "HILIC/pos+")
+  ) |>
+    dplyr::mutate(
+      significant = case_when(
+        P.Value_cov1 < 0.05 & P.Value_cov2 < 0.05 ~ "Both P < 0.05",
+        P.Value_cov1 < 0.05 ~ paste0("Primary analysis -", " P < 0.05"),
+        P.Value_cov2 < 0.05 ~ paste0("Sensitivity analysis -", " P < 0.05"),
+        TRUE ~ "NS"
+      ),
+      significant = factor(significant,
+                           levels = c("Both P < 0.05",
+                                      paste0("Primary analysis -", " P < 0.05"),
+                                      paste0("Sensitivity analysis -", " P < 0.05"),
+                                      "NS"))
     )
+
+  # Correlation on P < 0.05 points only
+  sig_data <- plot_data |>
+    dplyr::filter(significant != "NS")
+
+  # cor_test <- cor.test(sig_data$logFC_cov1, sig_data$logFC_cov2,
+  #                      use = "complete.obs")
+  # r <- cor_test$estimate
+  # p_val <- cor_test$p.value
+  # cor_label <- paste0("r = ", round(r, 3), "\np = ",
+  #                     ifelse(p_val < 0.001, formatC(p_val, format = "e", digits = 2),
+  #                            round(p_val, 3)))
+
+  p <- ggplot(plot_data, aes(x = logFC_cov1, y = logFC_cov2)) +
+    # NS points
+    geom_point(
+      data = . %>% filter(significant == "NS"),
+      aes(shape = column_type),
+      color = "grey70", alpha = 0.4, size = 1.5
+    ) +
+    # Significant points
+    geom_point(
+      data = . %>% filter(significant != "NS"),
+      aes(color = significant, shape = column_type),
+      alpha = 0.7, size = 2
+    ) +
+    # Fit line on P < 0.05 points only
+    geom_smooth(
+      data = sig_data,
+      aes(x = logFC_cov1, y = logFC_cov2),
+      method = "lm", se = TRUE,
+      color = "black", linewidth = 0.8, linetype = "solid",
+      alpha = 0.2, inherit.aes = FALSE
+    ) +
+    scale_color_manual(
+      values = c(
+        "Both P < 0.05" = "#B73F42",
+        setNames("#DE9960", paste0("Primary analysis -", " P < 0.05")),
+        setNames("#436C85", paste0("Sensitivity analysis -", " P < 0.05"))
+      ),
+      name = "Significance"
+    ) +
+    scale_shape_manual(
+      values = c("C18/neg-" = 16, "HILIC/pos+" = 17),
+      name = "Column"
+    ) +
+    # geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey40") +
+    geom_hline(yintercept = 0, linetype = "dotted", color = "grey60") +
+    geom_vline(xintercept = 0, linetype = "dotted", color = "grey60") +
+    ggpubr::stat_cor(
+      method = "pearson",
+      label.x.npc = "left", label.y.npc = "top",
+      size = 4, fontface = "italic"
+    ) +
+    # annotate("text", x = Inf, y = -Inf,
+    #          label = cor_label,
+    #          hjust = 1.1, vjust = -0.3, size = 4, fontface = "italic") +
+    labs(
+      title = paste0(gsub("exp_", "", exposure_name), " (", population, ")"),
+      x = "MWAS beta coefficients in the primary analysis",
+      y = "MWAS beta coefficients in the sensitivity analysis (additional covariates)"
+    ) +
+    theme_classic() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+      axis.title = element_text(face = "bold", size = 12),
+      axis.text = element_text(size = 10),
+      legend.position = "right",
+      legend.title = element_text(face = "bold", size = 10),
+      legend.text = element_text(size = 9)
+    )
+
+  return(p)
+}
+
+
+# Create and save population comparison scatter plots -------------------------
+# Compare demcind vs all and no demcind vs all (faceted)
+
+covar_names |>
+  purrr::walk(function(cov) {
+    exposure_vars |>
+      purrr::walk(function(exp) {
+        p <- create_population_scatter(
+          mwas_results_list_c18, mwas_results_list_hilic,
+          covar_set = cov, exposure_name = exp
+        )
+        ggsave(
+          filename = here::here("figures", "mwas", "all", cov, exp,
+                                glue::glue("scatter_pop_{exp}.png")),
+          plot = p,
+          width = 14, height = 7, dpi = 300
+        )
+      })
   })
 
-vip_scatter_hilic <- exposure_vars |>
-  purrr::set_names() |>
-  purrr::map(function(exp) {
-    create_vip_scatter(
-      mwas_results_hilic[[exp]],
-      vip_hilic[[exp]],
-      mwas_hilic_annotated[[exp]],
-      exposure_name = exp,
-      column_type = "HILIC"
-    )
+
+# Create and save covariate comparison scatter plots --------------------------
+# Compare covar vs covar_sen within each population and exposure
+
+population_names |>
+  purrr::walk(function(pop) {
+    exposure_vars |>
+      purrr::walk(function(exp) {
+        p <- create_covariate_scatter(
+          mwas_results_list_c18, mwas_results_list_hilic,
+          population = pop,
+          cov1 = "covar", cov2 = "covar_sen",
+          exposure_name = exp
+        )
+        ggsave(
+          filename = here::here("figures", "mwas", pop, "covar", exp,
+                                glue::glue("scatter_cov_{exp}.png")),
+          plot = p,
+          width = 8, height = 7, dpi = 300
+        )
+      })
   })
 
 
-# Save VIP scatter plots -----------------------------------------------------
+# =============================================================================
+# SECTION 2c: COMPOSITE EXPOSURE COMPARISON SCATTER PLOTS
+# =============================================================================
 
-purrr::iwalk(vip_scatter_c18, function(p, exp) {
-  ggsave(
-    filename = here::here("figures", "mwas",
-                          glue::glue("vip_scatter_c18_{exp}.png")),
-    plot = p,
-    width = 8, height = 6, dpi = 300
-  )
-})
+# Function to compare logFC between all-toxicant and traffic-related composites
+# Combines C18 and HILIC with different shapes
 
-purrr::iwalk(vip_scatter_hilic, function(p, exp) {
-  ggsave(
-    filename = here::here("figures", "mwas",
-                          glue::glue("vip_scatter_hilic_{exp}.png")),
-    plot = p,
-    width = 8, height = 6, dpi = 300
-  )
-})
+create_composite_scatter <- function(mwas_list_c18, mwas_list_hilic,
+                                     exp_all, exp_traffic,
+                                     population, covar_set,
+                                     method_label = "WQS") {
+
+  # Helper to prep data for one column type
+  prep_comp_data <- function(mwas_list, column_type) {
+    df_all <- mwas_list[[population]][[covar_set]][[exp_all]] |>
+      tibble::rownames_to_column("met") |>
+      dplyr::select(met, logFC_all = logFC, P.Value_all = P.Value)
+
+    df_traffic <- mwas_list[[population]][[covar_set]][[exp_traffic]] |>
+      tibble::rownames_to_column("met") |>
+      dplyr::select(met, logFC_traffic = logFC, P.Value_traffic = P.Value)
+
+    dplyr::inner_join(df_all, df_traffic, by = "met") |>
+      dplyr::mutate(column_type = column_type)
+  }
+
+  plot_data <- dplyr::bind_rows(
+    prep_comp_data(mwas_list_c18, "C18/neg-"),
+    prep_comp_data(mwas_list_hilic, "HILIC/pos+")
+  ) |>
+    dplyr::mutate(
+      significant = case_when(
+        P.Value_all < 0.05 & P.Value_traffic < 0.05 ~ "Both P < 0.05",
+        P.Value_all < 0.05 ~ "All toxicants P < 0.05",
+        P.Value_traffic < 0.05 ~ "Traffic-related P < 0.05",
+        TRUE ~ "NS"
+      ),
+      significant = factor(significant,
+                           levels = c("Both P < 0.05",
+                                      "All toxicants P < 0.05",
+                                      "Traffic-related P < 0.05",
+                                      "NS"))
+    )
+
+  # Fit line data: points where at least one is P < 0.05
+  sig_data <- plot_data |>
+    dplyr::filter(significant != "NS")
+
+  p <- ggplot(plot_data, aes(x = logFC_all, y = logFC_traffic)) +
+    # NS points
+    geom_point(
+      data = . %>% filter(significant == "NS"),
+      aes(shape = column_type),
+      color = "grey70", alpha = 0.5, size = 1.5
+    ) +
+    # Significant points
+    geom_point(
+      data = . %>% filter(significant != "NS"),
+      aes(color = significant, shape = column_type),
+      alpha = 0.7, size = 2
+    ) +
+    # Fit line on P < 0.05 points only
+    geom_smooth(
+      data = sig_data,
+      aes(x = logFC_all, y = logFC_traffic),
+      method = "lm", se = TRUE,
+      color = "black", linewidth = 0.8, linetype = "solid",
+      alpha = 0.2, inherit.aes = FALSE
+    ) +
+    scale_color_manual(
+      values = c(
+        "Both P < 0.05" = "#B73F42",
+        "All toxicants P < 0.05" = "#DE9960",
+        "Traffic-related P < 0.05" = "#436C85"
+      ),
+      name = "Significance"
+    ) +
+    scale_shape_manual(
+      values = c("C18/neg-" = 16, "HILIC/pos+" = 17),
+      name = "Column"
+    ) +
+    geom_hline(yintercept = 0, linetype = "dotted", color = "grey60") +
+    geom_vline(xintercept = 0, linetype = "dotted", color = "grey60") +
+    ggpubr::stat_cor(
+      method = "pearson",
+      label.x.npc = "left", label.y.npc = "top",
+      size = 4, fontface = "italic"
+    ) +
+    labs(
+      title = paste0(method_label, " (", population, ")"),
+      x = paste0("logFC (", gsub("exp_", "", exp_all), ")"),
+      y = paste0("logFC (", gsub("exp_", "", exp_traffic), ")")
+    ) +
+    theme_classic() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+      axis.title = element_text(face = "bold", size = 12),
+      axis.text = element_text(size = 10),
+      legend.position = "right",
+      legend.title = element_text(face = "bold", size = 10),
+      legend.text = element_text(size = 9)
+    )
+
+  return(p)
+}
+
+
+# Define composite exposure pairs
+composite_pairs <- list(
+  WQS = list(all = exposure_vars[1], traffic = exposure_vars[2]),
+  qgcomp = list(all = exposure_vars[4], traffic = exposure_vars[5])
+)
+
+# Create and save composite comparison scatter plots --------------------------
+
+population_names |>
+  purrr::walk(function(pop) {
+    covar_names |>
+      purrr::walk(function(cov) {
+        purrr::iwalk(composite_pairs, function(pair, method) {
+          p <- create_composite_scatter(
+            mwas_results_list_c18, mwas_results_list_hilic,
+            exp_all = pair$all, exp_traffic = pair$traffic,
+            population = pop, covar_set = cov,
+            method_label = method
+          )
+          ggsave(
+            filename = here::here("figures", "mwas", pop, cov,
+                                  glue::glue("scatter_composite_{method}.png")),
+            plot = p,
+            width = 8, height = 7, dpi = 300
+          )
+        })
+      })
+  })
 
 
 # =============================================================================
@@ -365,31 +679,61 @@ purrr::iwalk(vip_scatter_hilic, function(p, exp) {
 # =============================================================================
 
 # Create combined figure for a single exposure -------------------------------
+# Row 1: volcano
+# Row 2: population comparison | covariate comparison
+# Row 3: WQS composite comparison | qgcomp composite comparison
 
-create_combined_panel <- function(exposure_name) {
+create_combined_panel <- function(exposure_name, population, covar_set) {
 
-  p1 <- volcano_c18[[exposure_name]] +
-    labs(title = "C18 - Volcano") +
-    theme(legend.position = "none")
+  # Common legend theme: boxed legends
+  legend_theme <- theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.background = element_rect(colour = "grey80", fill = "white",
+                                     linewidth = 0.5),
+    legend.margin = margin(4, 6, 4, 6),
+    legend.title = element_text(face = "bold", size = 10),
+    legend.text = element_text(size = 9)
+  )
 
-  p2 <- volcano_hilic[[exposure_name]] +
-    labs(title = "HILIC - Volcano") +
-    theme(legend.position = "none")
+  # p1: volcano — show Column legend (ordered first) + Significance
+  p1 <- volcano_plots[[population]][[covar_set]][[exposure_name]] +
+    labs(title = NULL) +
+    guides(
+      shape = guide_legend(order = 1),
+      color = guide_legend(order = 2)
+    ) +
+    legend_theme
 
-  p3 <- vip_scatter_c18[[exposure_name]] +
-    labs(title = "C18 - VIP vs logFC") +
-    theme(legend.position = "none")
+  # p2: population scatter — color legend only, no Column
+  p2 <- create_population_scatter(
+    mwas_results_list_c18, mwas_results_list_hilic,
+    covar_set = covar_set, exposure_name = exposure_name
+  ) +
+    labs(title = NULL) +
+    guides(shape = "none") +
+    legend_theme
 
-  p4 <- vip_scatter_hilic[[exposure_name]] +
-    labs(title = "HILIC - VIP vs logFC") +
-    theme(legend.position = "none")
+  # p3: covariate scatter — color legend only, no Column
+  p3 <- create_covariate_scatter(
+    mwas_results_list_c18, mwas_results_list_hilic,
+    population = population,
+    cov1 = "covar", cov2 = "covar_sen",
+    exposure_name = exposure_name
+  ) +
+    labs(title = NULL) +
+    guides(shape = "none") +
+    legend_theme
 
-  # Combine with patchwork
-  combined <- (p1 | p2) / (p3 | p4) +
+  # Combine with patchwork: single row, each plot keeps its own legend
+  combined <- (p1 | p2 | p3) +
     patchwork::plot_annotation(
-      title = paste0("MWAS Results: ", gsub("exp_", "", exposure_name)),
+      title = paste0("MWAS Results: ", gsub("exp_", "", exposure_name),
+                     " (", population, ", ", covar_set, ")"),
+      tag_levels = "A",
       theme = theme(
-        plot.title = element_text(face = "bold", size = 16, hjust = 0.5)
+        plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.tag = element_text(face = "bold", size = 14)
       )
     )
 
@@ -397,17 +741,24 @@ create_combined_panel <- function(exposure_name) {
 }
 
 
-# Create and save combined panels for all exposures --------------------------
+# Create and save combined panels for all populations x covariates x exposures
 
-purrr::walk(exposure_vars, function(exp) {
-  p <- create_combined_panel(exp)
-  ggsave(
-    filename = here::here("figures", "mwas",
-                          glue::glue("combined_panel_{exp}.png")),
-    plot = p,
-    width = 14, height = 12, dpi = 300
-  )
-})
+population_names |>
+  purrr::walk(function(pop) {
+    covar_names |>
+      purrr::walk(function(cov) {
+        exposure_vars |>
+          purrr::walk(function(exp) {
+            p <- create_combined_panel(exp, pop, cov)
+            ggsave(
+              filename = here::here("figures", "mwas", pop, cov, exp,
+                                    glue::glue("combined_panel_{exp}.png")),
+              plot = p,
+              width = 24, height = 8, dpi = 300
+            )
+          })
+      })
+  })
 
 
 # =============================================================================
@@ -416,14 +767,16 @@ purrr::walk(exposure_vars, function(exp) {
 
 # Function to create heatmap of significant metabolites ----------------------
 
-create_sig_heatmap <- function(combined_results_list, column_type = "C18",
+create_sig_heatmap <- function(mwas_results_exposure_list, column_type = "C18",
+                                population = "all", covar_set = "covar",
                                 top_n = 50) {
 
   # Get top metabolites across all exposures
-  all_sig <- combined_results_list |>
+  all_sig <- mwas_results_exposure_list |>
     purrr::imap(function(df, exp) {
       df |>
-        dplyr::filter(adj.P.Val < 0.1 | VIP_comp1 > 2) |>
+        tibble::rownames_to_column("met") |>
+        dplyr::filter(adj.P.Val < 0.1) |>
         dplyr::mutate(exposure = exp)
     }) |>
     purrr::list_rbind()
@@ -438,16 +791,17 @@ create_sig_heatmap <- function(combined_results_list, column_type = "C18",
     dplyr::group_by(met) |>
     dplyr::summarize(
       min_p = min(adj.P.Val),
-      max_vip = max(VIP_comp1, na.rm = TRUE)
+      .groups = "drop"
     ) |>
     dplyr::arrange(min_p) |>
     dplyr::slice_head(n = top_n) |>
     dplyr::pull(met)
 
   # Create matrix for heatmap
-  heatmap_data <- combined_results_list |>
+  heatmap_data <- mwas_results_exposure_list |>
     purrr::imap(function(df, exp) {
       df |>
+        tibble::rownames_to_column("met") |>
         dplyr::filter(met %in% top_mets) |>
         dplyr::select(met, logFC) |>
         dplyr::rename(!!exp := logFC)
@@ -469,8 +823,9 @@ create_sig_heatmap <- function(combined_results_list, column_type = "C18",
     show_colnames = TRUE,
     fontsize_row = 8,
     fontsize_col = 10,
-    main = paste0("Top ", top_n, " Significant Metabolites - ", column_type),
-    filename = here::here("figures", "mwas",
+    main = paste0("Top ", top_n, " Significant Metabolites - ", column_type,
+                  " (", population, ", ", covar_set, ")"),
+    filename = here::here("figures", "mwas", population, covar_set,
                           glue::glue("heatmap_top{top_n}_{column_type}.png")),
     width = 10,
     height = 12
@@ -480,8 +835,16 @@ create_sig_heatmap <- function(combined_results_list, column_type = "C18",
 
 # Create heatmaps ------------------------------------------------------------
 
-create_sig_heatmap(combined_results_c18, "C18", top_n = 50)
-create_sig_heatmap(combined_results_hilic, "HILIC", top_n = 50)
+population_names |>
+  purrr::walk(function(pop) {
+    covar_names |>
+      purrr::walk(function(cov) {
+        create_sig_heatmap(mwas_results_list_c18[[pop]][[cov]], "C18",
+                           population = pop, covar_set = cov, top_n = 50)
+        create_sig_heatmap(mwas_results_list_hilic[[pop]][[cov]], "HILIC",
+                           population = pop, covar_set = cov, top_n = 50)
+      })
+  })
 
 
 # =============================================================================
@@ -490,13 +853,17 @@ create_sig_heatmap(combined_results_hilic, "HILIC", top_n = 50)
 
 # Create correlation plot of effect sizes across exposures -------------------
 
-create_exposure_correlation <- function(combined_results_list, column_type = "C18") {
+create_exposure_correlation <- function(mwas_results_exposure_list,
+                                        column_type = "C18",
+                                        population = "all",
+                                        covar_set = "covar") {
 
   # Get common significant metabolites
-  sig_mets <- combined_results_list |>
+  sig_mets <- mwas_results_exposure_list |>
     purrr::map(function(df) {
       df |>
-        dplyr::filter(adj.P.Val < 0.1 | VIP_comp1 > 2) |>
+        tibble::rownames_to_column("met") |>
+        dplyr::filter(adj.P.Val < 0.1) |>
         dplyr::pull(met)
     }) |>
     purrr::reduce(union)
@@ -507,9 +874,10 @@ create_exposure_correlation <- function(combined_results_list, column_type = "C1
   }
 
   # Create logFC matrix
-  logfc_matrix <- combined_results_list |>
+  logfc_matrix <- mwas_results_exposure_list |>
     purrr::imap(function(df, exp) {
       df |>
+        tibble::rownames_to_column("met") |>
         dplyr::filter(met %in% sig_mets) |>
         dplyr::select(met, logFC) |>
         dplyr::rename(!!gsub("exp_", "", exp) := logFC)
@@ -529,16 +897,25 @@ create_exposure_correlation <- function(combined_results_list, column_type = "C1
     fontsize_number = 10,
     cluster_rows = TRUE,
     cluster_cols = TRUE,
-    main = paste0("Correlation of Effect Sizes - ", column_type),
-    filename = here::here("figures", "mwas",
+    main = paste0("Correlation of Effect Sizes - ", column_type,
+                  " (", population, ", ", covar_set, ")"),
+    filename = here::here("figures", "mwas", population, covar_set,
                           glue::glue("exposure_correlation_{column_type}.png")),
     width = 10,
     height = 8
   )
 }
 
-create_exposure_correlation(combined_results_c18, "C18")
-create_exposure_correlation(combined_results_hilic, "HILIC")
+population_names |>
+  purrr::walk(function(pop) {
+    covar_names |>
+      purrr::walk(function(cov) {
+        create_exposure_correlation(mwas_results_list_c18[[pop]][[cov]], "C18",
+                                    population = pop, covar_set = cov)
+        create_exposure_correlation(mwas_results_list_hilic[[pop]][[cov]], "HILIC",
+                                    population = pop, covar_set = cov)
+      })
+  })
 
 
 # =============================================================================
@@ -547,21 +924,19 @@ create_exposure_correlation(combined_results_hilic, "HILIC")
 
 # Function to create Manhattan plot ------------------------------------------
 
-create_manhattan <- function(mwas_result, vip_result, exposure_name,
+create_manhattan <- function(mwas_result, exposure_name,
                               column_type = "C18") {
 
   plot_data <- mwas_result |>
     tibble::rownames_to_column("met") |>
-    dplyr::left_join(
-      vip_result |>
-        tibble::rownames_to_column("met") |>
-        dplyr::select(met, VIP = comp1),
-      by = "met"
-    ) |>
     dplyr::mutate(
       index = row_number(),
       neg_log10_p = -log10(P.Value),
-      significant = adj.P.Val < 0.05 | VIP > 2
+      significant = case_when(
+        adj.P.Val < 0.05 ~ "FDR < 0.05",
+        P.Value < 0.05 ~ "P < 0.05",
+        TRUE ~ "NS"
+      )
     )
 
   # Significance threshold line
@@ -569,15 +944,15 @@ create_manhattan <- function(mwas_result, vip_result, exposure_name,
 
   p <- ggplot(plot_data, aes(x = index, y = neg_log10_p)) +
     geom_point(
-      aes(color = significant, size = VIP),
-      alpha = 0.6
+      aes(color = significant),
+      alpha = 0.6,
+      size = 1.5
     ) +
     scale_color_manual(
-      values = c("TRUE" = "#E41A1C", "FALSE" = "grey60"),
-      labels = c("TRUE" = "Significant", "FALSE" = "NS"),
-      name = "Status"
+      values = c("FDR < 0.05" = "#E41A1C", "P < 0.05" = "#377EB8",
+                 "NS" = "grey60"),
+      name = "Significance"
     ) +
-    scale_size_continuous(range = c(1, 4), name = "VIP Score") +
     geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
     geom_hline(yintercept = sig_line, linetype = "dashed", color = "red") +
     labs(
@@ -603,20 +978,33 @@ create_manhattan <- function(mwas_result, vip_result, exposure_name,
 nox_exposures <- exposure_vars[grepl("nox|no2", exposure_vars, ignore.case = TRUE)]
 
 if (length(nox_exposures) > 0) {
-  purrr::walk(nox_exposures, function(exp) {
-    p <- create_manhattan(
-      mwas_results_c18[[exp]],
-      vip_c18[[exp]],
-      exposure_name = exp,
-      column_type = "C18"
-    )
-    ggsave(
-      filename = here::here("figures", "mwas",
-                            glue::glue("manhattan_c18_{exp}.png")),
-      plot = p,
-      width = 12, height = 6, dpi = 300
-    )
-  })
+  population_names |>
+    purrr::walk(function(pop) {
+      covar_names |>
+        purrr::walk(function(cov) {
+          purrr::walk(nox_exposures, function(exp) {
+            c("C18", "HILIC") |>
+              purrr::walk(function(col_type) {
+                mwas_list <- if (col_type == "C18") {
+                  mwas_results_list_c18
+                } else {
+                  mwas_results_list_hilic
+                }
+                p <- create_manhattan(
+                  mwas_list[[pop]][[cov]][[exp]],
+                  exposure_name = exp,
+                  column_type = col_type
+                )
+                ggsave(
+                  filename = here::here("figures", "mwas", pop, cov, exp,
+                                        glue::glue("manhattan_{tolower(col_type)}_{exp}.png")),
+                  plot = p,
+                  width = 12, height = 6, dpi = 300
+                )
+              })
+          })
+        })
+    })
 }
 
 
