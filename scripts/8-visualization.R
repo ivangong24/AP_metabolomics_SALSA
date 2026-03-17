@@ -1015,6 +1015,7 @@ if (length(nox_exposures) > 0) {
 # Load additional packages for pathway visualization --------------------------
 
 library(ggthemes)
+library(ggh4x)
 
 # Define pathway categories ---------------------------------------------------
 
@@ -1038,7 +1039,8 @@ lipid_metabolism <- c("Bile", "Fatty", "lipid", "Phytanic",
 
 energy_metabolism <- c("Butanoate", "Carnitine", "Glycolysis",
                        "Pyruvate", "Pentose", "octadecatrienoate",
-                       "TCA", "Citrate", "Oxidative")
+                       "TCA", "Citrate", "Oxidative", "Glyoxylate", 
+                       "Propanoate")
 
 inflammation_metabolism <- c("Arachidonic", "Leukotriene", "Prostaglandin",
                              "linoleic", "Linoleate", "Eicosanoid")
@@ -1093,20 +1095,27 @@ categorize_pathway <- function(pathway_name) {
 
 # Read pathway enrichment results ---------------------------------------------
 
-# Get all mummichog pathway enrichment files
+# Get pathway files only for comp_qgcomp_all and comp_wqs_all
 pathway_files <- list.files(
-  here::here("metaboAnalyst"),
+  here::here("metaboAnalyst", "Output"),
   pattern = "mummichog_pathway_enrichment",
   recursive = TRUE,
   full.names = TRUE
-)
+) |>
+  # Keep only comp_qgcomp_all and comp_wqs_all folders
+  purrr::keep(~ grepl("comp_qgcomp_all|comp_wqs_all", .x))
 
 # Function to read and process pathway file
+# Path structure: metaboAnalyst/Output/{population}/{covar_set}/{exposure}/file.csv
 read_pathway_file <- function(file_path) {
-  # Extract exposure name from file path
-  dir_name <- basename(dirname(file_path))
+  # Extract population, covar_set, and exposure from path
+  path_parts <- unlist(strsplit(file_path, "/"))
+  output_idx <- which(path_parts == "Output")
+  population <- path_parts[output_idx + 1]
+  covar_set <- path_parts[output_idx + 2]
+  exposure <- path_parts[output_idx + 3]
 
-  # Read the file (handle both csv and xlsx)
+  # Read the file
   if (grepl("\\.csv$", file_path)) {
     df <- readr::read_csv(file_path, show_col_types = FALSE)
   } else if (grepl("\\.xlsx$", file_path)) {
@@ -1123,13 +1132,16 @@ read_pathway_file <- function(file_path) {
       pathway_size = any_of(c("pathway total", "pathway_total", "total")),
       hits_total = any_of(c("hits.total", "hits_total", "total_hits")),
       hits_sig = any_of(c("hits.sig", "hits_sig", "sig_hits")),
+      expected = any_of(c("expected")),
       p_value = any_of(c("p(fisher)", "p.value", "pvalue", "p_value"))
     )
 
-  # Add exposure info
+  # Add metadata and category
   df |>
     dplyr::mutate(
-      exposure = dir_name,
+      exposure = exposure,
+      population = population,
+      covar_set = covar_set,
       category = categorize_pathway(pathway_name)
     )
 }
@@ -1144,11 +1156,27 @@ if (length(pathway_files) > 0) {
 
   if (nrow(pathway_all) > 0) {
 
-    # Filter significant pathways (drop zinc and o3)
+    # Filter significant pathways
     pathway_sig <- pathway_all |>
       dplyr::filter(p_value < 0.05) |>
-      dplyr::filter(!str_detect(exposure, regex("zinc|o3", ignore_case = TRUE))) |>
       dplyr::arrange(p_value)
+
+    # Calculate enrichment factor
+    pathway_sig <- pathway_sig |>
+      dplyr::mutate(
+        enrichment_factor = hits_sig / expected,
+        exposure_clean = dplyr::case_when(
+          exposure == "comp_wqs_all" ~ "Air toxicant composite (WQS)",
+          exposure == "comp_qgcomp_all" ~ "Air toxicant composite (QG-computation)",
+          TRUE ~ exposure
+        ),
+        exposure_short = dplyr::case_when(
+          exposure == "comp_wqs_all" ~ "WQS",
+          exposure == "comp_qgcomp_all" ~ "QGcomp",
+          TRUE ~ exposure
+        ),
+        population = factor(population, levels = c("all", "no demcind", "demcind"))
+      )
 
     # Save significant pathways to Excel
     if (nrow(pathway_sig) > 0) {
@@ -1158,51 +1186,90 @@ if (length(pathway_files) > 0) {
       )
     }
 
-    # Create pathway summary plot if we have significant pathways
-    if (nrow(pathway_sig) > 0) {
+    # Function to create pathway enrichment summary plot for a given covar_set
+    create_pathway_summary <- function(data, covar_label) {
+
+      if (nrow(data) == 0) {
+        message(paste("No significant pathways for", covar_label))
+        return(NULL)
+      }
 
       # Step 1: Get unique pathway/category combinations with min p-value
-      pathway_summary <- pathway_sig |>
+      pathway_summary <- data |>
         dplyr::group_by(pathway_name, category) |>
         dplyr::summarise(
           min_p = min(p_value, na.rm = TRUE),
           .groups = "drop"
         )
 
-      # Step 2: Order categories by their minimum p-value (best category first)
-      # Reverse so smallest p-value category appears at TOP of figure
+      # Step 2: Order categories by their minimum p-value
+      # Smallest p-value category at TOP of facet_grid (first level)
       category_order <- pathway_summary |>
         dplyr::group_by(category) |>
         dplyr::summarise(cat_min_p = min(min_p), .groups = "drop") |>
-        dplyr::arrange(desc(cat_min_p)) |>
+        dplyr::arrange(cat_min_p) |>
         dplyr::pull(category)
 
-      # Step 3: Sort pathways - first by category order, then by p-value within category
-      # Within each category, sort descending so smallest p-value appears at TOP
+      # Step 3: Sort pathways within each category
+      # Within facets, y-axis goes bottom-to-top, so order descending so smallest p at top
       pathway_sorted <- pathway_summary |>
         dplyr::mutate(category = factor(category, levels = category_order)) |>
         dplyr::arrange(category, desc(min_p)) |>
         dplyr::mutate(pathway_name = fct_inorder(pathway_name))
 
-      # Step 4: Prepare data for plotting with proper factor levels
-      pathway_plot_data <- pathway_sig |>
+      # Step 4: Prepare data for plotting
+      plot_data <- data |>
         dplyr::mutate(
           category = factor(category, levels = category_order),
-          pathway_name = factor(pathway_name, levels = levels(pathway_sorted$pathway_name)),
-          exposure_clean = gsub("exp_", "", exposure)
+          pathway_name = factor(pathway_name, levels = levels(pathway_sorted$pathway_name))
         )
 
-      # Get unique categories for color palette (in order)
+      # Get unique categories for color palette
       cats <- category_order
       pal <- ggthemes::tableau_color_pal("Tableau 10")(length(cats))
       names(pal) <- cats
 
+      # Create colored strip backgrounds for category facets
+      strip_colors <- lapply(pal[cats], function(col) {
+        element_rect(fill = alpha(col, 0.3), colour = "grey80")
+      })
 
-      # Create heatmap of pathway p-values across exposures
-      pathway_heatmap <- pathway_plot_data |>
+      # Population colors
+      pop_levels <- c("all", "no demcind", "demcind")
+      pop_pal <- setNames(c("#436C85", "#B73F42", "#DE9960"), pop_levels)
+
+      # Create colored strip backgrounds for population facets
+      pop_strip_colors <- lapply(pop_pal[pop_levels], function(col) {
+        element_rect(fill = alpha(col, 0.7), colour = "grey80")
+      })
+
+      # --- Heatmap (faceted by category rows and population columns) ---
+      # Create complete grid for white missing cells
+      all_combos <- tidyr::expand_grid(
+        pathway_name = levels(pathway_sorted$pathway_name),
+        population = factor(c("all", "no demcind", "demcind"),
+                            levels = c("all", "no demcind", "demcind")),
+        exposure_short = unique(plot_data$exposure_short)
+      ) |>
+        dplyr::mutate(
+          pathway_name = factor(pathway_name, levels = levels(pathway_sorted$pathway_name))
+        ) |>
+        # Add category from pathway_sorted
+        dplyr::left_join(
+          pathway_sorted |> dplyr::select(pathway_name, category),
+          by = "pathway_name"
+        )
+
+      heatmap_data <- all_combos |>
+        dplyr::left_join(
+          plot_data |> dplyr::select(pathway_name, population, exposure_short, p_value),
+          by = c("pathway_name", "population", "exposure_short")
+        )
+
+      pathway_heatmap <- heatmap_data |>
         ggplot() +
         geom_tile(
-          aes(x = exposure_clean, y = pathway_name, fill = p_value),
+          aes(x = exposure_short, y = pathway_name, fill = p_value),
           lwd = 1.2,
           linetype = 1,
           color = "white"
@@ -1213,13 +1280,18 @@ if (length(pathway_files) > 0) {
           limits = c(0, 0.05),
           breaks = c(0.01, 0.03, 0.05),
           labels = c("0.01", "0.03", "0.05"),
-          name = "p-value"
+          name = "p-value",
+          na.value = "white"
         ) +
-        coord_fixed(0.8) +
-        labs(
-          y = "Pathway",
-          x = "Exposure"
+        ggh4x::facet_grid2(
+          category ~ population,
+          scales = "free_y", space = "free_y",
+          strip = ggh4x::strip_themed(
+            background_y = strip_colors,
+            background_x = pop_strip_colors
+          )
         ) +
+        labs(y = "Pathway", x = "Exposure") +
         theme_classic() +
         theme(
           legend.position = "bottom",
@@ -1231,27 +1303,41 @@ if (length(pathway_files) > 0) {
           axis.title.y = element_text(face = "bold", size = 14),
           axis.title.x = element_text(face = "bold", size = 14),
           axis.text.y = element_text(size = 10),
-          axis.text.x = element_text(size = 10, angle = 45, hjust = 1)
+          axis.text.x = element_text(size = 10),
+          strip.text.x = element_text(face = "bold", size = 12),
+          strip.text.y = element_text(face = "bold.italic", size = 10, angle = 0),
+          panel.spacing.x = unit(0.1, "lines")
         )
 
-
-      # Create scatter plot of pathway enrichment by exposure
-      pathway_scatter <- pathway_plot_data |>
+      # --- Scatter plot (-log10 p-value, sized by enrichment factor) ---
+      pathway_scatter <- plot_data |>
         ggplot(aes(x = -log10(p_value), y = pathway_name)) +
         geom_point(
-          aes(size = hits_sig, color = exposure_clean),
+          aes(size = enrichment_factor, color = population, shape = exposure_clean),
           alpha = 0.7
         ) +
-        scale_size_continuous(range = c(2, 8), name = "Hits (sig)") +
-        scale_color_tableau("Tableau 10") +
+        scale_size_continuous(range = c(2, 8), name = "Enrichment factor") +
+        scale_color_manual(values = pop_pal, name = "Population") +
+        scale_shape_manual(
+          values = c("Air toxicant composite (WQS)" = 16,
+                     "Air toxicant composite (QG-computation)" = 17),
+          name = "Exposure"
+        ) +
+        ggh4x::facet_grid2(
+          category ~ .,
+          scales = "free_y", space = "free_y",
+          strip = ggh4x::strip_themed(
+            background_y = strip_colors
+          )
+        ) +
         labs(
           y = "",
-          x = expression(-log[10](p-value)),
-          color = "Exposure"
+          x = expression(-log[10](p-value))
         ) +
         theme_classic() +
         theme(
           legend.position = "bottom",
+          legend.box = "horizontal",
           legend.title = element_text(face = "bold", size = 12),
           legend.text = element_text(size = 10),
           axis.line = element_blank(),
@@ -1259,125 +1345,64 @@ if (length(pathway_files) > 0) {
           axis.ticks.y = element_blank(),
           axis.title.x = element_text(face = "bold", size = 14),
           axis.text.y = element_blank(),
-          axis.text.x = element_text(size = 12)
+          axis.text.x = element_text(size = 12),
+          strip.text.y = element_blank()
         )
 
-
-      # Create color block for pathway categories
-      # Count pathways per category in the SAME order as the heatmap
-      category_summary <- pathway_sorted |>
-        dplyr::group_by(category) |>
-        dplyr::summarise(
-          category_count = n(),
-          .groups = "drop"
-        ) |>
-        # Keep the same category order
-        dplyr::mutate(category = factor(category, levels = category_order)) |>
-        dplyr::arrange(category) |>
-        # Calculate positions from bottom to top (matching ggplot y-axis)
-        dplyr::mutate(
-          ymax = cumsum(category_count),
-          ymin = lag(ymax, default = 0),
-          pos = (ymin + ymax) / 2
-        )
-
-      pathway_color_block <- category_summary |>
-        ggplot() +
-        geom_rect(
-          aes(xmin = 0.5, xmax = 1.5,
-              ymin = ymin + 0.1, ymax = ymax - 0.1,
-              fill = category),
-          alpha = 0.5
-        ) +
-        geom_text(
-          aes(x = 1, y = pos, label = category),
-          size = 3,
-          fontface = "italic"
-        ) +
-        scale_fill_manual(values = pal, limits = cats, drop = FALSE) +
-        theme_void() +
-        guides(fill = "none") +
-        scale_y_continuous(
-          limits = c(0, nrow(pathway_sorted)),
-          expand = c(0, 0)
-        ) +
-        scale_x_continuous(expand = c(0, 0))
-
-
-      # Combine plots using patchwork
-      pathway_combined <- pathway_color_block + pathway_heatmap + pathway_scatter +
+      # --- Combine plots ---
+      pathway_combined <- pathway_heatmap + pathway_scatter +
         patchwork::plot_layout(
-          widths = c(0.2, 0.4, 0.4),
+          widths = c(0.45, 0.55),
           guides = "collect"
         ) &
-        theme(legend.position = "bottom")
+        theme(
+          legend.position = "bottom",
+          legend.justification = c(0, 0.5),
+          legend.margin = margin(0, 0, 0, 0),
+          legend.box.margin = margin(0, 0, 0, -20)
+        )
 
-      # Save combined pathway plot
+      pathway_combined <- pathway_combined +
+        patchwork::plot_annotation(
+          title = covar_label,
+          theme = theme(
+            plot.title = element_text(face = "bold", size = 16, hjust = 0.5)
+          )
+        )
+
+      return(list(plot = pathway_combined, n_pathways = nrow(pathway_sorted)))
+    }
+
+    # Create plots for covar (primary analysis)
+    covar_data <- pathway_sig |> dplyr::filter(covar_set == "covar")
+    covar_result <- create_pathway_summary(covar_data, "Primary analysis")
+
+    if (!is.null(covar_result)) {
       ggsave(
-        filename = here::here("figures", "mwas", "pathway_enrichment_summary.png"),
-        plot = pathway_combined,
-        width = 16,
-        height = max(8, nrow(pathway_sorted) * 0.3),
+        filename = here::here("figures", "mwas", "pathway_enrichment_summary_covar.png"),
+        plot = covar_result$plot,
+        width = 20,
+        height = max(8, covar_result$n_pathways * 0.3),
         dpi = 300
       )
-
-
-      # Create individual pathway heatmap for each category
-      pathway_by_category <- pathway_sig |>
-        dplyr::group_by(category) |>
-        dplyr::group_split()
-
-      purrr::walk(pathway_by_category, function(cat_data) {
-        if (nrow(cat_data) < 2) return(NULL)
-
-        cat_name <- unique(cat_data$category)
-
-        p <- cat_data |>
-          dplyr::mutate(
-            pathway_name = fct_reorder(pathway_name, p_value),
-            exposure_clean = gsub("exp_", "", exposure)
-          ) |>
-          ggplot() +
-          geom_tile(
-            aes(x = exposure_clean, y = pathway_name, fill = p_value),
-            color = "white",
-            lwd = 1
-          ) +
-          scale_fill_gradient(
-            low = "#E41A1C",
-            high = "#FFFFB2",
-            limits = c(0, 0.05),
-            name = "p-value"
-          ) +
-          labs(
-            title = paste0("Pathway Enrichment: ", cat_name, " metabolism"),
-            x = "Exposure",
-            y = "Pathway"
-          ) +
-          theme_classic() +
-          theme(
-            plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-            legend.position = "right",
-            axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-            axis.text.y = element_text(size = 9),
-            axis.title = element_text(face = "bold", size = 12)
-          )
-
-        ggsave(
-          filename = here::here("figures", "mwas",
-                                glue::glue("pathway_{gsub('/', '_', cat_name)}.png")),
-          plot = p,
-          width = 10,
-          height = max(6, nrow(cat_data) * 0.25),
-          dpi = 300
-        )
-      })
-
-      message("Pathway enrichment plots created!")
-
-    } else {
-      message("No significant pathways found (p < 0.05)")
     }
+
+    # Create plots for covar_sen (sensitivity analysis)
+    covar_sen_data <- pathway_sig |> dplyr::filter(covar_set == "covar_sen")
+    covar_sen_result <- create_pathway_summary(covar_sen_data, "Sensitivity analysis")
+
+    if (!is.null(covar_sen_result)) {
+      ggsave(
+        filename = here::here("figures", "mwas", "pathway_enrichment_summary_covar_sen.png"),
+        plot = covar_sen_result$plot,
+        width = 20,
+        height = max(8, covar_sen_result$n_pathways * 0.3),
+        dpi = 300
+      )
+    }
+
+    message("Pathway enrichment plots created!")
+
   } else {
     message("No pathway data could be read from files")
   }
