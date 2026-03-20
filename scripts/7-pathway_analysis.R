@@ -188,211 +188,139 @@ message("Mummichog input files created in metaboAnalyst/Input/")
 # SECTION 2: RUN MUMMICHOG PATHWAY ANALYSIS
 # =============================================================================
 
-#### Create directories in "metaboAnalyst/" for each exposure
+source(here::here("scripts", "mummichog_pathway.R"))
+
+# Create output directories for each exposure ----------------------------------
 
 exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
 
-names(combined_results_list_c18) |> 
-  purrr::map(function(population){
-    names(covar_list) |> 
-      purrr::map(function(covar_name){
-        exposure_vars %>% 
-          map(function(exp_name){
-            dir.create(here::here("metaboAnalyst", "Output", 
-                                  population, covar_name, exp_name), 
+names(combined_results_list_c18) |>
+  purrr::walk(function(population) {
+    names(covar_list) |>
+      purrr::walk(function(covar_name) {
+        exposure_vars |>
+          purrr::walk(function(exp_name) {
+            dir.create(here::here("metaboAnalyst", "Output",
+                                  population, covar_name, exp_name),
                        showWarnings = FALSE, recursive = TRUE)
           })
       })
   })
 
-#### Get list of directories and input files for Mummichog analysis
-wd_num_list <- names(combined_results_list_c18) |> 
-  purrr::map(function(population){
-    names(covar_list) |> 
-      purrr::map(function(covar_name){
-        here("metaboAnalyst", "Output", population, covar_name) |> 
-          list.dirs(recursive = FALSE)
-      })
-  })
+# Run Mummichog for each exposure and population --------------------------------
 
-sub_dir_list1 <- names(combined_results_list_c18)
+message("Running Mummichog pathway analysis...")
 
-sub_dir_list2 <- names(covar_list)
+system.time({
+  names(combined_results_list_c18) |>
+    purrr::set_names() |>
+    purrr::map(function(population) {
+      names(covar_list) |>
+        purrr::set_names() |>
+        purrr::map(function(covar_name) {
+          input_dir <- here::here("metaboAnalyst", "Input",
+                                  population, covar_name)
+          input_files <- list.files(input_dir, pattern = "\\.txt$",
+                                    full.names = TRUE)
+          input_files |>
+            purrr::set_names(
+              basename(input_files) |>
+                stringr::str_remove("\\.txt$") |>
+                stringr::str_remove("^mwas_") |>
+                stringr::str_remove(paste0("_", population,
+                                           "_", covar_name, "$"))
+            ) |>
+            purrr::imap(function(input_file, exp_name) {
+              message(paste0("\n--- Running Mummichog for: ",
+                             exp_name, " (", population, " - ",
+                             covar_name, ") ---"))
 
+              tryCatch(
+                run_mummichog(
+                  input_file = input_file,
+                  output_dir = here::here("metaboAnalyst", "Output",
+                                          population, covar_name,
+                                          exp_name),
+                  p_cutoff = 0.1,
+                  organism = "hsa_mfn",
+                  instrument_ppm = 10.0,
+                  ion_mode = "mixed",
+                  adducts = c("M-H [1-]", "M-2H [2-]",
+                              "M-H2O-H [1-]", "M [1+]",
+                              "M+H [1+]", "M+Na [1+]"),
+                  min_hits = 3,
+                  num_permutations = 100
+                ),
+                error = function(e) {
+                  warning(paste0("Mummichog failed for ", exp_name,
+                                 " (", population, " - ",
+                                 covar_name, "): ", e$message))
+                  return(NULL)
+                }
+              )
+            })
+        })
+    }) -> mummichog_results_combined
+})
 
-input_list <- names(combined_results_list_c18) |> 
-  purrr::map(function(population){
-     names(covar_list) |> 
-      purrr::map(function(covar_name){
-        here("metaboAnalyst", "Input", population, covar_name)|> 
-          list.files(full.names = TRUE, recursive = FALSE) |> 
-          basename()
-      })
-  })
+# Save Mummichog R objects for downstream analysis
+save(mummichog_results_combined,
+     file = here::here("data", "metabolomics", "results",
+                       "mummichog_results_all.RData"))
 
-  
-pathway_name_list <- input_list |>  
-  purrr::map(function(files_list){
-    files_list |> 
-      purrr::map(function(files){
-        files |> 
-          str_remove(".txt") |>  
-          map(function(name){
-            str_c("p_pathway","_", name)
+# Extract and save Mummichog result tables -------------------------------------
+
+mummichog_results_combined |>
+  purrr::imap(function(result_by_covar, population) {
+    result_by_covar |>
+      purrr::imap(function(result_list, covar_name) {
+        # Save result tables to Excel
+        result_tables <- result_list |>
+          purrr::compact() |>
+          purrr::map(~ .x$result_table)
+
+        if (length(result_tables) > 0) {
+          dir.create(here::here("tables", "mummichog_results",
+                                population, covar_name),
+                     showWarnings = FALSE, recursive = TRUE)
+
+          result_tables |>
+            purrr::imap(function(tbl, exp_name) {
+              writexl::write_xlsx(
+                tbl,
+                path = here::here(
+                  "tables", "mummichog_results", population, covar_name,
+                  glue::glue("mummichog_{exp_name}_{population}_{covar_name}.xlsx"))
+              )
+            })
+        }
+
+        # Save plots
+        dir.create(here::here("figures", "mummichog", population, covar_name),
+                   showWarnings = FALSE, recursive = TRUE)
+
+        result_list |>
+          purrr::compact() |>
+          purrr::imap(function(res, exp_name) {
+            if (!is.null(res$plot)) {
+              ggsave(
+                filename = here::here(
+                  "figures", "mummichog", population, covar_name,
+                  glue::glue("mummichog_{exp_name}_{population}_{covar_name}.png")),
+                plot = res$plot +
+                  ggtitle(paste0("Mummichog: ", exp_name)),
+                width = 10, height = 8, dpi = 300
+              )
+            }
           })
       })
   })
 
-
-# Function to run Mummichog using MetaboAnalystR -----------------------------
-
-setwd(here::here())
-source("scripts/function_mummichog.r")
-
-# Run Mummichog for each exposure --------------------------------------------
-
-# Run analysis (this may take some time)
-message("Running Mummichog pathway analysis...")
-
-system.time({
-  list(wd_num_list,
-       sub_dir_list1, 
-       input_list,
-       pathway_name_list) |> 
-    purrr::pmap(function(wd_mum_ls, sub_dir1, input_ls, pathway_name_ls){
-      list(wd_mum_ls, sub_dir_list2, input_ls, pathway_name_ls) |>  
-        purrr::pmap(function(wd_mumls, sub_dir2, inputls, pathway_namels){
-          list(wd_mumls, inputls) |> 
-            purrr::pmap(function(wd_mum, input){
-              message(paste0("Running Mummichog pathway analysis in ", 
-                             sub_dir1, " ", sub_dir2, " using ", input, " ---"))
-              mummichog(wd_mum, input, sub_dir1, sub_dir2)
-            }) %>% 
-            purrr::set_names(pathway_namels) |> 
-            list2env(.GlobalEnv)
-        })
-    })
-})
-
-
-# Function to extract pathway results from mSet ------------------------------
-
-extract_pathway_results <- function(mSet) {
-  if (is.null(mSet)) return(NULL)
-  
-  # Extract Mummichog results
-  mum_results <- tryCatch({
-    mSet$mummi.resmat |>
-      as.data.frame() |>
-      tibble::rownames_to_column("pathway") |>
-      dplyr::arrange(P.Value)
-  }, error = function(e) NULL)
-  
-  # Extract GSEA results
-  gsea_results <- tryCatch({
-    mSet$gsea.resmat |>
-      as.data.frame() |>
-      tibble::rownames_to_column("pathway") |>
-      dplyr::arrange(P.Value)
-  }, error = function(e) NULL)
-  
-  return(list(
-    mummichog = mum_results,
-    gsea = gsea_results
-  ))
-}
-
-
-# Extract results for all exposures ------------------------------------------
-
-if (!is.null(mummichog_results)) {
-  pathway_results <- mummichog_results |>
-    purrr::map(extract_pathway_results)
-  
-  # Save pathway results
-  save(pathway_results,
-       file = here::here("data", "metabolomics", "results",
-                         "pathway_results_all.RData"))
-}
-
-# Function to create pathway summary table -----------------------------------
-
-create_pathway_summary <- function(pathway_results, p_threshold = 0.05) {
-  if (is.null(pathway_results)) return(NULL)
-  
-  # Summarize Mummichog results
-  mum_summary <- pathway_results |>
-    purrr::imap(function(res, exp) {
-      if (is.null(res$mummichog)) return(NULL)
-      res$mummichog |>
-        dplyr::filter(P.Value < p_threshold) |>
-        dplyr::mutate(exposure = exp) |>
-        dplyr::select(exposure, pathway, P.Value, everything())
-    }) |>
-    purrr::compact() |>
-    purrr::list_rbind()
-  
-  # Summarize GSEA results
-  gsea_summary <- pathway_results |>
-    purrr::imap(function(res, exp) {
-      if (is.null(res$gsea)) return(NULL)
-      res$gsea |>
-        dplyr::filter(P.Value < p_threshold) |>
-        dplyr::mutate(exposure = exp) |>
-        dplyr::select(exposure, pathway, P.Value, everything())
-    }) |>
-    purrr::compact() |>
-    purrr::list_rbind()
-  
-  return(list(
-    mummichog = mum_summary,
-    gsea = gsea_summary
-  ))
-}
-
-
-# Create and save summary tables ---------------------------------------------
-
-if (exists("pathway_results") && !is.null(pathway_results)) {
-  pathway_summary <- create_pathway_summary(pathway_results)
-  
-  # Save to Excel
-  if (!is.null(pathway_summary$mummichog) && nrow(pathway_summary$mummichog) > 0) {
-    writexl::write_xlsx(
-      pathway_summary$mummichog,
-      here::here("tables", "mwas_results", "pathway_summary_mummichog.xlsx")
-    )
-  }
-  
-  if (!is.null(pathway_summary$gsea) && nrow(pathway_summary$gsea) > 0) {
-    writexl::write_xlsx(
-      pathway_summary$gsea,
-      here::here("tables", "mwas_results", "pathway_summary_gsea.xlsx")
-    )
-  }
-}
-
-
-
-# mummichog_results <- tryCatch({
-#   exposure_vars |>
-#     purrr::set_names() |>
-#     purrr::map(function(exp) {
-#       message(paste0("Processing: ", exp))
-#       run_mummichog(
-#         input_file = here::here("metaboAnalyst", "Input",
-#                                 paste0("mwas_", exp, ".txt")),
-#         output_dir = here::here("metaboAnalyst", "Output", exp),
-#         exposure_name = exp,
-#         p_cutoff = 0.05,
-#         organism = "hsa"
-#       )
-#     })
-# }, error = function(e) {
-#   message("Mummichog analysis failed. Error: ", e$message)
-#   message("Please run pathway analysis manually using MetaboAnalyst web interface.")
-#   return(NULL)
-# })
+message("Mummichog pathway analysis completed!")
+message("Results saved to:")
+message("  - metaboAnalyst/Output/ (MetaboAnalystR output)")
+message("  - tables/mummichog_results/ (result tables)")
+message("  - figures/mummichog/ (bubble plots)")
 
 
 

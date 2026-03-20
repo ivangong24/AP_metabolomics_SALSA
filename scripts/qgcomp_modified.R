@@ -69,7 +69,7 @@ run_qgcomp_boot_parallel <- function(data,
     }
     
     if (!quiet) {
-      message("Fitting qgcomp.boot model for: ", outcome, deparse(form), 
+      message("Fitting qgcomp.boot model for: ", deparse(form), 
               " with family = ", fam$family)
     }
     
@@ -343,7 +343,7 @@ run_qgcomp_noboot_parallel <- function(data,
     }
     
     if (!quiet) {
-      message("Fitting qgcomp.noboot model for: ", outcome, deparse(form), 
+      message("Fitting qgcomp.noboot model for: ", deparse(form), 
               " with family = ", fam$family)
     }
     
@@ -490,6 +490,230 @@ run_qgcomp_noboot_parallel <- function(data,
   composites <- purrr::map(fits, "composite") |>
     purrr::reduce(dplyr::left_join, by = id_cols)
   
-  list(results = results, models = models, 
+  list(results = results, models = models,
+       composites = composites, id_cols = id_cols)
+}
+
+# qgcomp.cox.noboot for time-to-event analysis (fixed weights, no bootstrap)
+run_qgcomp_cox_noboot_parallel <- function(data,
+                                  exposures_list,
+                                  time_var,
+                                  event_var,
+                                  covariates_list,
+                                  q = 4,
+                                  seed = 42,
+                                  id_var = NULL,    # subject ID variable passed to qgcomp.cox.noboot(id=)
+                                  id_cols = NULL,   # columns for merging composites back
+                                  workers = NULL,
+                                  quiet = FALSE,
+                                  progress_handler = c("txtprogressbar", "cli")) {
+
+  # ---- deps ----
+  pkgs <- c("dplyr", "purrr", "tibble", "qgcomp", "survival",
+            "future", "furrr", "progressr", "rlang")
+  missing_pkgs <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(missing_pkgs) > 0) {
+    stop("Please install required packages: ", paste(missing_pkgs, collapse = ", "))
+  }
+  progress_handler <- match.arg(progress_handler)
+
+  stopifnot(is.data.frame(data))
+  stopifnot(length(exposures_list) > 0)
+  stopifnot(length(time_var) == 1, length(event_var) == 1)
+
+  # ---- validate columns ----
+  needed <- unique(c(exposures_list, time_var, event_var, covariates_list, id_var, id_cols))
+  missing_cols <- setdiff(needed, names(data))
+  if (length(missing_cols) > 0) {
+    stop("Missing columns in `data`: ", paste(missing_cols, collapse = ", "))
+  }
+
+  # ID strategy for merging back
+  if (is.null(id_cols) || length(id_cols) == 0) {
+    data_id <- dplyr::mutate(data, row_id = dplyr::row_number())
+    id_cols <- "row_id"
+  } else {
+    data_id <- data
+  }
+
+  # Keep only what we need
+  data_small <- dplyr::select(data_id, dplyr::all_of(needed))
+
+  rhs <- paste(c(exposures_list, covariates_list), collapse = " + ")
+
+  # ---- helper: extract weights ----
+  get_weights <- function(mod, exposures_list) {
+    coef_df <- tibble::tibble(
+      term = names(mod$fit$coefficients),
+      coefficient = mod$fit$coefficients
+    ) |>
+      dplyr::filter(term %in% exposures_list) |>
+      dplyr::mutate(weight = coefficient / sum(abs(coefficient)))
+
+    return(list(weight = coef_df$weight))
+  }
+
+  fit_one <- function(outcome_label) {
+    # For Cox models, the "outcome" is Surv(time, event)
+    form <- stats::as.formula(
+      paste0("survival::Surv(", time_var, ", ", event_var, ") ~ ", rhs)
+    )
+
+    # complete cases
+    dat_cc <- data_small |>
+      dplyr::select(dplyr::all_of(unique(c(id_cols, id_var, time_var, event_var,
+                                           exposures_list, covariates_list)))) |>
+      dplyr::filter(dplyr::if_all(dplyr::all_of(c(time_var, event_var,
+                                                   exposures_list,
+                                                   covariates_list)),
+                                  ~ !is.na(.x)))
+
+    if (!quiet) {
+      message("Fitting qgcomp.cox.noboot model for: ", deparse(form))
+    }
+
+    # Fit Cox noboot model
+    # Workaround: qgcomp.cox.noboot has `id` in its signature but never
+    # forwards it to coxph internally. Remove `id` from the local function copy
+    # so the actual ID vector reaches coxph via `...` for multi-state models.
+    local_cox_noboot <- qgcomp::qgcomp.cox.noboot
+    formals(local_cox_noboot)$id <- NULL
+
+    cox_args <- list(
+      f      = form,
+      data   = dat_cc,
+      expnms = exposures_list,
+      q      = q
+    )
+    if (!is.null(id_var)) {
+      cox_args$id <- dat_cc[[id_var]]  # pass actual vector, not string
+    }
+
+    model <- tryCatch(
+      do.call(local_cox_noboot, cox_args),
+      error = function(e) e
+    )
+
+    if (inherits(model, "error")) {
+      if (!quiet) message("Model failed for ", outcome_label, ": ", model$message)
+
+      comp_tbl <- data_small |>
+        dplyr::distinct(dplyr::across(dplyr::all_of(id_cols))) |>
+        dplyr::mutate(!!paste0("comp_", outcome_label) := NA_real_)
+
+      res_tbl <- tibble::tibble(
+        Outcome     = outcome_label,
+        N           = NA_integer_,
+        N_events    = NA_integer_,
+        HR_CI       = NA_character_,
+        P_value_raw = NA_real_,
+        HR          = NA_real_,
+        log_HR      = NA_real_,
+        Conf_low    = NA_real_,
+        Conf_high   = NA_real_
+      )
+
+      return(list(result = res_tbl, model = NULL, composite = comp_tbl))
+    }
+
+    # Extract psi1 (log hazard ratio)
+    coefs <- summary(model)$coefficients
+    if (!("psi1" %in% rownames(coefs))) {
+      if (!quiet) message("Outcome ", outcome_label, ": 'psi1' not found in coefficients.")
+      log_hr <- NA_real_; pval <- NA_real_
+      conf_low <- NA_real_; conf_high <- NA_real_
+      hr_ci <- NA_character_
+    } else {
+      res <- coefs["psi1", , drop = TRUE]
+      log_hr <- unname(res[["Estimate"]])
+      pval   <- unname(res[["Pr(>|z|)"]])
+
+      conf_low  <- if ("Lower CI" %in% names(res)) unname(res[["Lower CI"]]) else NA_real_
+      conf_high <- if ("Upper CI" %in% names(res)) unname(res[["Upper CI"]]) else NA_real_
+    }
+
+    # Exponentiate to get HR and CI
+    hr         <- exp(log_hr)
+    hr_low     <- if (is.finite(conf_low))  exp(conf_low)  else NA_real_
+    hr_high    <- if (is.finite(conf_high)) exp(conf_high) else NA_real_
+
+    hr_ci <- if (is.finite(hr_low) && is.finite(hr_high)) {
+      sprintf("%.2f (%.2f, %.2f)", hr, hr_low, hr_high)
+    } else {
+      sprintf("%.2f", hr)
+    }
+
+    n_events <- sum(dat_cc[[event_var]] == 1, na.rm = TRUE)
+
+    res_tbl <- tibble::tibble(
+      Outcome     = outcome_label,
+      N           = nrow(dat_cc),
+      N_events    = n_events,
+      HR_CI       = hr_ci,
+      P_value_raw = pval,
+      HR          = hr,
+      log_HR      = log_hr,
+      Conf_low    = hr_low,
+      Conf_high   = hr_high
+    )
+
+    # ---- Build composite exposure ----
+    w <- get_weights(model, exposures_list)
+    qmat_num <- as.matrix(model$qx)
+    comp <- as.numeric(qmat_num %*% w$weight)
+
+    comp_tbl <- dat_cc |>
+      dplyr::select(dplyr::all_of(id_cols)) |>
+      dplyr::mutate(!!paste0("comp_", outcome_label) := comp)
+
+    list(result = res_tbl, model = model, composite = comp_tbl)
+  }
+
+  # ---- workers + parallel plan ----
+  if (is.null(workers)) {
+    workers <- max(1, future::availableCores() - 1)
+  }
+  old_plan <- future::plan()
+  on.exit(future::plan(old_plan), add = TRUE)
+  future::plan(future::multisession, workers = workers)
+
+  old_handlers <- progressr::handlers()
+  on.exit(progressr::handlers(old_handlers), add = TRUE)
+  progressr::handlers(global = TRUE)
+  progressr::handlers(progress_handler)
+
+  set.seed(seed)
+
+  # For Cox models we have a single outcome (Surv(time, event)),
+  outcome_labels <- paste0(event_var)
+
+  fits <- progressr::with_progress({
+    p <- progressr::progressor(along = outcome_labels)
+
+    furrr::future_map(
+      outcome_labels,
+      ~ { p(sprintf("Outcome: %s", .x)); fit_one(.x) },
+      .options = furrr::furrr_options(seed = TRUE)
+    )
+  })
+  names(fits) <- outcome_labels
+
+  results <- purrr::map_dfr(fits, "result") |>
+    dplyr::mutate(
+      P_value_FDR_raw = stats::p.adjust(P_value_raw, method = "fdr"),
+      P_value         = custom_format(P_value_raw),
+      P_value_FDR     = custom_format(P_value_FDR_raw)
+    ) |>
+    dplyr::select(
+      Outcome, N, N_events, HR_CI, P_value, P_value_FDR,
+      P_value_raw, P_value_FDR_raw, HR, log_HR, Conf_low, Conf_high
+    )
+
+  models <- purrr::map(fits, "model")
+
+  composites <- purrr::map(fits, "composite") |>
+    purrr::reduce(dplyr::left_join, by = id_cols)
+
+  list(results = results, models = models,
        composites = composites, id_cols = id_cols)
 }
