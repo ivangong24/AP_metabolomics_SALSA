@@ -44,13 +44,17 @@ covar_list <- list(
 
 list("Input", "Output") |> 
   purrr::map(function(dir){
-    names(combined_results_list_c18) |> 
-      purrr::walk(function(population){
-        names(covar_list) |> 
-          purrr::walk(function(covar_name){
-            dir.create(here::here("metaboAnalyst", dir, population, covar_name), 
-                       showWarnings = FALSE, recursive = TRUE)
-        })
+    combined_data_list_c18 |> 
+      purrr::imap(function(data, study){
+        names(data) |> 
+          purrr::walk(function(population){
+            names(covar_list) |> 
+              purrr::walk(function(covar_name){
+                dir.create(here::here("metaboAnalyst", dir, study, 
+                                      population, covar_name), 
+                           showWarnings = FALSE, recursive = TRUE)
+              })
+          })
       })
   })
 
@@ -96,28 +100,33 @@ create_mummichog_input <- function(mwas_result, mz_rt_link_df, mode) {
 
 # Create input files for each exposure ---------------------------------------
 
-exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
+# exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
 
 list(
   list(mwas_results_list_c18, mwas_results_list_hilic),
   list(c18_mz_rt_link_mz_links, hil_mz_rt_link_mz_links),
   list("negative", "positive")
 ) |> 
-  purrr::pmap(function(mwas_results_list, mz_rt_link_df, mode){
-    mwas_results_list |> 
-      purrr::imap(function(mwas_results_ls, population){
-        mwas_results_ls |> 
-          purrr::imap(function(mwas_results, covar_name){
-            message(paste0("Creating Mummichog input for: ", 
-                           population, " - ", covar_name, " (", mode, ")"))
-            exposure_vars |>
-              purrr::set_names() |>
-              purrr::map(function(exp) {
-                create_mummichog_input(
-                  mwas_results[[exp]],
-                  mz_rt_link_df,
-                  mode = mode
-                )
+  purrr::pmap(function(mwas_results_data_list, mz_rt_link_df, mode){
+    list(mwas_results_data_list, exposure_vars_list, 
+         names(exposure_vars_list)) |> 
+      purrr::pmap(function(mwas_results_list, exposure_vars, study){
+        mwas_results_list |> 
+          purrr::imap(function(mwas_results_ls, population){
+            mwas_results_ls |> 
+              purrr::imap(function(mwas_results, covar_name){
+                message(paste0("Creating Mummichog input for: ", 
+                               study, "_", population, 
+                               " - ", covar_name, " (", mode, ")"))
+                exposure_vars |>
+                  purrr::set_names() |>
+                  purrr::map(function(exp) {
+                    create_mummichog_input(
+                      mwas_results[[exp]],
+                      mz_rt_link_df,
+                      mode = mode
+                    )
+                  })
               })
           })
       })
@@ -128,20 +137,24 @@ list(
 
 # Combine C18 and HILIC for each exposure ------------------------------------
 
-list(mummichog_input_list_c18, mummichog_input_list_hilic) |> 
-  purrr::pmap(function(c18_list_ls, hilic_list_ls){
-    list(c18_list_ls, hilic_list_ls) |> 
-      purrr::pmap(function(c18_list, hilic_list){
-        exposure_vars |>
-          purrr::set_names() |>
-          purrr::map(function(exp) {
-            dplyr::bind_rows(
-              c18_list[[exp]],
-              hilic_list[[exp]]
-            ) |>
-              dplyr::arrange(`p.value`)
+list(mummichog_input_list_c18, mummichog_input_list_hilic, 
+     exposure_vars_list) |> 
+  purrr::pmap(function(c18_datalist, hilic_datalist, exposure_vars){
+    list(c18_datalist, hilic_datalist) |> 
+      purrr::pmap(function(c18_list_ls, hilic_list_ls){
+        list(c18_list_ls, hilic_list_ls) |> 
+          purrr::pmap(function(c18_list, hilic_list){
+            exposure_vars |>
+              purrr::set_names() |>
+              purrr::map(function(exp) {
+                dplyr::bind_rows(
+                  c18_list[[exp]],
+                  hilic_list[[exp]]
+                ) |>
+                  dplyr::arrange(`p.value`)
+              })
           })
-      })
+      }) 
   }) -> mummichog_input_list_combined
 
 
@@ -159,27 +172,33 @@ list(mummichog_input_list_c18, mummichog_input_list_hilic) |>
 # Write input files ----------------------------------------------------------
 
 mummichog_input_list_combined |> 
-  purrr::imap(function(dflist, population) {
-    dflist |> 
-      purrr::imap(function(dfls, covar_name){
-        dfls |> 
-          purrr::imap(function(df, exp) {
-            message(paste0("Creating Mummichog input for: ", 
-                           population, " - ", covar_name, " - ", exp))
-            write.table(
-              df,
-              file = here::here("metaboAnalyst", "Input", population, 
-                                covar_name,
-                                paste0("mwas_", exp, "_", population, 
-                                       "_", covar_name, ".txt")),
-              row.names = FALSE,
-              col.names = TRUE,
-              quote = FALSE,
-              sep = "\t"
-            )
+  purrr::imap(function(datalist, study){
+    datalist |> 
+      purrr::imap(function(dflist, population) {
+        dflist |> 
+          purrr::imap(function(dfls, covar_name){
+            dfls |> 
+              purrr::imap(function(df, exp) {
+                message(paste0("Creating Mummichog input for: ", 
+                               study, "_", population, 
+                               " - ", covar_name, " - ", exp))
+                write.table(
+                  df,
+                  file = here::here("metaboAnalyst", "Input", study, population, 
+                                    covar_name,
+                                    paste0("mwas_", exp, "_", 
+                                           study, "_", population, 
+                                           "_", covar_name, ".txt")),
+                  row.names = FALSE,
+                  col.names = TRUE,
+                  quote = FALSE,
+                  sep = "\t"
+                )
+              })
           })
       })
   })
+  
 
 message("Mummichog input files created in metaboAnalyst/Input/")
 
@@ -192,74 +211,80 @@ source(here::here("scripts", "mummichog_pathway.R"))
 
 # Create output directories for each exposure ----------------------------------
 
-exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
+# exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
 
-names(combined_results_list_c18) |>
-  purrr::walk(function(population) {
-    names(covar_list) |>
-      purrr::walk(function(covar_name) {
-        exposure_vars |>
-          purrr::walk(function(exp_name) {
-            dir.create(here::here("metaboAnalyst", "Output",
-                                  population, covar_name, exp_name),
-                       showWarnings = FALSE, recursive = TRUE)
+list(combined_results_list_c18, exposure_vars_list, 
+     names(exposure_vars_list)) |>
+  purrr::pmap(function(data, exposure_vars, study){
+    names(data) |> 
+      purrr::walk(function(population) {
+        names(covar_list) |>
+          purrr::walk(function(covar_name) {
+            exposure_vars |>
+              purrr::walk(function(exp_name) {
+                dir.create(here::here("metaboAnalyst", "Output", study,
+                                      population, covar_name, exp_name),
+                           showWarnings = FALSE, recursive = TRUE)
+              })
           })
       })
   })
+
 
 # Run Mummichog for each exposure and population --------------------------------
 
 message("Running Mummichog pathway analysis...")
 
 system.time({
-  names(combined_results_list_c18) |>
-    purrr::set_names() |>
-    purrr::map(function(population) {
-      names(covar_list) |>
-        purrr::set_names() |>
-        purrr::map(function(covar_name) {
-          input_dir <- here::here("metaboAnalyst", "Input",
-                                  population, covar_name)
-          input_files <- list.files(input_dir, pattern = "\\.txt$",
-                                    full.names = TRUE)
-          input_files |>
-            purrr::set_names(
-              basename(input_files) |>
-                stringr::str_remove("\\.txt$") |>
-                stringr::str_remove("^mwas_") |>
-                stringr::str_remove(paste0("_", population,
-                                           "_", covar_name, "$"))
-            ) |>
-            purrr::imap(function(input_file, exp_name) {
-              message(paste0("\n--- Running Mummichog for: ",
-                             exp_name, " (", population, " - ",
-                             covar_name, ") ---"))
-
-              tryCatch(
-                run_mummichog(
-                  input_file = input_file,
-                  output_dir = here::here("metaboAnalyst", "Output",
-                                          population, covar_name,
-                                          exp_name),
-                  p_cutoff = 0.1,
-                  organism = "hsa_mfn",
-                  instrument_ppm = 10.0,
-                  ion_mode = "mixed",
-                  adducts = c("M-H [1-]", "M-2H [2-]",
-                              "M-H2O-H [1-]", "M [1+]",
-                              "M+H [1+]", "M+Na [1+]"),
-                  min_hits = 3,
-                  num_permutations = 100
-                ),
-                error = function(e) {
-                  warning(paste0("Mummichog failed for ", exp_name,
-                                 " (", population, " - ",
-                                 covar_name, "): ", e$message))
-                  return(NULL)
-                }
-              )
+  combined_results_list_c18 |> 
+    purrr::imap(function(data, study){
+      names(data) |>
+        purrr::walk(function(population) {
+          names(covar_list) |>
+            purrr::walk(function(covar_name) {
+              input_dir <- here::here("metaboAnalyst", "Input", study,
+                                      population, covar_name)
+              input_files <- list.files(input_dir, pattern = "\\.txt$",
+                                        full.names = TRUE)
+              input_files |>
+                purrr::set_names(
+                  basename(input_files) |>
+                    stringr::str_remove("\\.txt$") |>
+                    stringr::str_remove("^mwas_") |>
+                    stringr::str_remove(paste0("_", study, "_", population,
+                                               "_", covar_name, "$"))
+                ) |>
+                purrr::imap(function(input_file, exp_name) {
+                  message(paste0("\n--- Running Mummichog for: ",
+                                 exp_name, " (", study, "_", population, " - ",
+                                 covar_name, ") ---"))
+                  
+                  tryCatch(
+                    run_mummichog(
+                      input_file = input_file,
+                      output_dir = here::here("metaboAnalyst", "Output", 
+                                              study, population, covar_name,
+                                              exp_name),
+                      p_cutoff = 0.1,
+                      organism = "hsa_mfn",
+                      instrument_ppm = 10.0,
+                      ion_mode = "mixed",
+                      adducts = c("M-H [1-]", "M-2H [2-]",
+                                  "M-H2O-H [1-]", "M [1+]",
+                                  "M+H [1+]", "M+Na [1+]"),
+                      min_hits = 3,
+                      num_permutations = 100
+                    ),
+                    error = function(e) {
+                      warning(paste0("Mummichog failed for ", exp_name,
+                                     " (", study, "_", population, " - ",
+                                     covar_name, "): ", e$message))
+                      return(NULL)
+                    }
+                  )
+                })
             })
-        })
+        }) 
     }) -> mummichog_results_combined
 })
 

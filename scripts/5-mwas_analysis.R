@@ -278,7 +278,6 @@ system.time({
 save(dupcor_c18_list, dupcor_hilic_list,
      file = here::here("data", "processed", 
                        "duplicate_correlation_results.RData"))
-
 # Fit limma models -----------------------------------------------------------
 
 ## Function to fit limma model with duplicate correlation
@@ -315,7 +314,8 @@ system.time({
                 purrr::pmap(function(designls, dupcorls, 
                                      combined_data, covar_name){
                   message(paste0("Fitting limma models for ", mode, 
-                                 " in ", population, " with covariates set: ", 
+                                 " in ", study, "_", population, 
+                                 " with covariates set: ", 
                                  covar_name, " ..."))
                   
                   block <- combined_data$rand_id
@@ -344,7 +344,8 @@ save(limma_fit_c18, file = here::here("data", "metabolomics",
 
 save(limma_fit_hilic, file = here::here("data", "metabolomics", 
                                        "results", "limma_fit_hilic.RData"))
-
+# load(here::here("data", "metabolomics", "results", "limma_fit_c18.RData"))
+# load(here::here("data", "metabolomics", "results", "limma_fit_hilic.RData"))
 # Extract MWAS results -------------------------------------------------------
 
 ## Function to extract topTable results
@@ -508,6 +509,7 @@ list(
 
 # Set maximum vector size for PLS to avoid memory issues
 # I only got 18GB of RAM, so I set the max vector size to 64GB to be safe
+
 mem.maxVSize(vsize = 65536)
 
 list(
@@ -544,7 +546,12 @@ list(
   purrr::set_names("pls_results_list_c18", "pls_results_list_hilic") |>
   list2env(.GlobalEnv)
 
-
+save(pls_results_list_c18, 
+     file = here::here("data", "metabolomics", 
+                       "results", "pls_results_c18.RData"))
+save(pls_results_list_hilic,
+     file = here::here("data", "metabolomics", 
+                       "results", "pls_results_hilic.RData"))
 
 # Extract VIP scores ---------------------------------------------------------
 
@@ -628,7 +635,8 @@ combine_mwas_vip <- function(mwas_results, vip_results, annotation_df = NULL) {
         dplyr::left_join(
           vip |>
             tibble::rownames_to_column("met") |>
-            dplyr::select(met, VIP_comp1 = comp1, VIP_comp2 = comp2, VIP_comp3 = comp3),
+            dplyr::select(met, VIP_comp1 = comp1, 
+                          VIP_comp2 = comp2, VIP_comp3 = comp3),
           by = "met"
         ) |>
         dplyr::arrange(adj.P.Val)
@@ -640,17 +648,22 @@ list(
   list(mwas_results_list_c18, mwas_results_list_c18),
   list(vip_c18_list, vip_c18_list)
 ) |> 
-  purrr::pmap(function(mode, mwas_list, vip_list){
-    list(mwas_list, vip_list, names(mwas_list)) |> 
-      purrr::pmap(function(mwas_results_ls, vip_results_ls, population){
-        list(mwas_results_ls, vip_results_ls, names(mwas_results_ls)) |> 
-          purrr::pmap(function(mwas_results, vip_results, covar_name){
-             message(paste0("Combining MWAS and VIP results for ", mode, 
-                            " in ", population, " with covariates set: ", 
-                            covar_name, " ..."))
-            
-             combine_mwas_vip(mwas_results, vip_results) |>
-               purrr::set_names(exposure_vars)
+  purrr::pmap(function(mode, mwas_data_list, vip_data_list){
+    list(mwas_data_list, vip_data_list, 
+         exposure_vars_list, names(mwas_data_list)) |> 
+      purrr::pmap(function(mwas_list, vip_list, exposure_vars, study){
+        list(mwas_list, vip_list, names(mwas_list)) |> 
+          purrr::pmap(function(mwas_results_ls, vip_results_ls, population){
+            list(mwas_results_ls, vip_results_ls, names(mwas_results_ls)) |> 
+              purrr::pmap(function(mwas_results, vip_results, covar_name){
+                message(paste0("Combining MWAS and VIP results for ", mode, 
+                               " in ", study, "_", population, 
+                               " with covariates set: ", 
+                               covar_name, " ..."))
+                
+                combine_mwas_vip(mwas_results, vip_results) |>
+                  purrr::set_names(exposure_vars)
+              })
           })
       })
   }) |> 
@@ -676,16 +689,20 @@ list(
   list("C18", "HILIC"),
   list(combined_results_list_c18, combined_results_list_hilic)
 ) |> 
-  purrr::pmap(function(mode, combined_results_list){
-    combined_results_list |> 
-      purrr::imap(function(dflist, population){
-        dflist |> 
-          purrr::imap(function(df, covar_name){
-             message(paste0("Filtering significant metabolites for ", mode, 
-                            " in ", population, " with covariates set: ", 
-                            covar_name, " ..."))
-             filter_significant(df, fdr_thresh = 0.05, vip_thresh = 2)
-
+  purrr::pmap(function(mode, combined_results_data_list){
+    combined_results_data_list |> 
+      purrr::imap(function(combined_results_list, study){
+        combined_results_list |> 
+          purrr::imap(function(dflist, population){
+            dflist |> 
+              purrr::imap(function(df, covar_name){
+                message(paste0("Filtering significant metabolites for ", mode, 
+                               " in ", study, "_", population, 
+                               " with covariates set: ", 
+                               covar_name, " ..."))
+                filter_significant(df, fdr_thresh = 0.05, vip_thresh = 2)
+                
+              })
           })
       })
   }) |> 
@@ -702,14 +719,19 @@ list(
 
 # Create output directories --------------------------------------------------
 
-names(combined_data_list_c18) |> 
-  purrr::walk(function(population){
-    names(covar_list) |> 
-      purrr::walk(function(covar_name){
-        dir.create(here::here("tables", "mwas_results", population, covar_name), 
-                   showWarnings = FALSE, recursive = TRUE)
+combined_data_list_c18 |> 
+  purrr::imap(function(data, study){
+    names(data) |> 
+      purrr::walk(function(population){
+        names(covar_list) |> 
+          purrr::walk(function(covar_name){
+            dir.create(here::here("tables", "mwas_results", 
+                                  study, population, covar_name), 
+                       showWarnings = FALSE, recursive = TRUE)
+          })
       })
   })
+
 
 # dir.create(here::here("tables", "mwas_results"), 
 #            showWarnings = FALSE, recursive = TRUE)
@@ -724,24 +746,28 @@ list(
   list(combined_results_list_c18, combined_results_list_hilic),
   list("c18", "hilic")
 ) |>
-  pmap(function(datalist, mode){
-    datalist |> 
-      purrr::imap(function(dflist, population){
-        dflist |> 
-          purrr::imap(function(df_ls, covar_name){
-             message(paste0("Saving combined MWAS + VIP results for ", mode, 
-                            " in ", population, " with covariates set: ", 
-                            covar_name, " ..."))
-            df_ls |>
-              purrr::imap(function(df, exp_name) {
-                writexl::write_xlsx(
-                  df,
-                  path = here::here(
-                    "tables", "mwas_results", population, covar_name,
-                    glue::glue(
-                      "mwas_{mode}_{exp_name}_{population}_{covar_name}.xlsx"
-                      ))
-                )
+  purrr::pmap(function(data_list, mode){
+    data_list |> 
+      purrr::imap(function(datalist, study){
+        datalist |> 
+          purrr::imap(function(dflist, population){
+            dflist |> 
+              purrr::imap(function(df_ls, covar_name){
+                message(paste0("Saving combined MWAS + VIP results for ", mode, 
+                               " in ", study, "_", population, 
+                               " with covariates set: ", 
+                               covar_name, " ..."))
+                df_ls |>
+                  purrr::imap(function(df, exp_name) {
+                    writexl::write_xlsx(
+                      df,
+                      path = here::here(
+                        "tables", "mwas_results", study, population, covar_name,
+                        glue::glue(
+                          "mwas_{mode}_{exp_name}_{study}_{population}_{covar_name}.xlsx"
+                        ))
+                    )
+                  })
               })
           })
       })
@@ -754,26 +780,30 @@ list(
   list(significant_results_list_c18, significant_results_list_hilic),
   list("c18", "hilic")
 ) |>
-  pmap(function(datalist, mode){
-    datalist |> 
-      purrr::imap(function(dflist, population){
-        dflist |> 
-          purrr::imap(function(df_ls, covar_name){
-            message(paste0("Saving significant MWAS + VIP results for ", mode, 
-                           " in ", population, " with covariates set: ", 
-                           covar_name, " ..."))
-            df_ls |>
-              purrr::imap(function(df, exp_name) {
-                if (nrow(df) > 0) {
-                  writexl::write_xlsx(
-                    df,
-                    path = here::here(
-                      "tables", "mwas_results", population, covar_name,
-                      glue::glue(
-                        "mwas_{mode}_{exp_name}_{population}_{covar_name}_sig.xlsx"
-                        ))
-                  )
-                }
+  purrr::pmap(function(data_list, mode){
+    data_list |> 
+      purrr::imap(function(datalist, study){
+        datalist |> 
+          purrr::imap(function(dflist, population){
+            dflist |> 
+              purrr::imap(function(df_ls, covar_name){
+                message(paste0("Saving significant MWAS + VIP results for ",
+                               mode, " in ", study, "_", population, 
+                               " with covariates set: ", 
+                               covar_name, " ..."))
+                df_ls |>
+                  purrr::imap(function(df, exp_name) {
+                    if (nrow(df) > 0) {
+                      writexl::write_xlsx(
+                        df,
+                        path = here::here(
+                          "tables", "mwas_results", study, population, covar_name,
+                          glue::glue(
+                            "mwas_{mode}_{exp_name}_{study}_{population}_{covar_name}_sig.xlsx"
+                          ))
+                      )
+                    }
+                  })
               })
           })
       })
@@ -800,7 +830,8 @@ message("MWAS analysis completed! Results saved to tables/mwas_results/")
 
 # Create summary table for all exposures -------------------------------------
 
-create_summary_table <- function(mwas_c18, mwas_hilic, vip_c18, vip_hilic) {
+create_summary_table <- function(mwas_c18, mwas_hilic, 
+                                 vip_c18, vip_hilic, exposure_vars) {
   exposure_vars |>
     purrr::map(function(exp) {
       tibble(
@@ -820,23 +851,31 @@ create_summary_table <- function(mwas_c18, mwas_hilic, vip_c18, vip_hilic) {
 
 list(
   mwas_results_list_c18, mwas_results_list_hilic,
-  vip_c18_list, vip_hilic_list
+  vip_c18_list, vip_hilic_list, exposure_vars_list
 ) |> 
-  purrr::pmap(function(mwas_results_c18_ls, mwas_results_hilic_ls, 
-                       vip_c18_ls, vip_hilic_ls){
-    list(mwas_results_c18_ls, mwas_results_hilic_ls, vip_c18_ls, vip_hilic_ls) |> 
-      purrr::pmap(function(mwas_c18, mwas_hilic, vip_c18, vip_hilic){
-         message("Creating summary table for MWAS results...")
-         create_summary_table(mwas_c18, mwas_hilic, vip_c18, vip_hilic)
-      })
+  purrr::pmap(function(mwas_results_c18_dflist, mwas_results_hilic_dflist, 
+                       vip_c18_dflist, vip_hilic_dflist, exposure_vars){
+    list(mwas_results_c18_dflist, mwas_results_hilic_dflist, 
+         vip_c18_dflist, vip_hilic_dflist) |> 
+      purrr::pmap(function(mwas_results_c18_ls, mwas_results_hilic_ls, 
+                           vip_c18_ls, vip_hilic_ls){
+        list(mwas_results_c18_ls, mwas_results_hilic_ls, vip_c18_ls, vip_hilic_ls) |> 
+          purrr::pmap(function(mwas_c18, mwas_hilic, vip_c18, vip_hilic){
+            message("Creating summary table for MWAS results...")
+            create_summary_table(mwas_c18, mwas_hilic, 
+                                 vip_c18, vip_hilic, exposure_vars)
+          })
+      }) 
   }) -> summary_table_list
 
 
 
 summary_table_list |> 
-  purrr::map(function(summary_table_ls, mode){
-    message("\nMWAS Summary Table:")
-    summary_table_ls
+  purrr::map(function(summary_table_ls) {
+    summary_table_ls |> 
+      purrr::map(function(summary_table_dflist){
+        summary_table_dflist
+      })
   })
 
 # writexl::write_xlsx(

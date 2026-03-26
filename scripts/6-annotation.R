@@ -398,13 +398,16 @@ list(
 ) |>
   purrr::pmap(function(annot_wide, sig_mwas_df_list, mode) {
     sig_mwas_df_list |>
-      purrr::map(function(dflist) {
-        dflist |> 
-          purrr::map(function(dfls){
-            dfls |>
-              purrr::map(function(df){
-                df |> 
-                  dplyr::left_join(annot_wide, by = c("met" = "id"))
+      purrr::map(function(datalist) {
+        datalist |> 
+          purrr::map(function(dflist) {
+            dflist |> 
+              purrr::map(function(dfls){
+                dfls |>
+                  purrr::map(function(df){
+                    df |> 
+                      dplyr::left_join(annot_wide, by = c("met" = "id"))
+                  })
               })
           })
       })
@@ -426,21 +429,26 @@ list(
 ) |>
   purrr::pmap(function(datalist, mode) {
     datalist |> 
-      purrr::imap(function(dflist, population){
-        dflist |>
-          purrr::imap(function(dfls, covar_name){
-            dfls |> 
-              purrr::imap(function(df, exp_name) {
-                df |>
-                  writexl::write_xlsx(
-                    here::here(
-                      "tables", "mwas_results", population, covar_name,
-                      glue::glue("mwas_{mode}_{exp_name}_{population}_{covar_name}_sig_annotated.xlsx"))
-                  )
-                message(paste0("MWAS results with annotation for ",
-                               exp_name, " ", mode, " in ", population, 
-                               "with covariate ", covar_name,
-                               " saved successfully!"))
+      purrr::imap(function(data_list, study){
+        data_list |> 
+          purrr::imap(function(dflist, population){
+            dflist |>
+              purrr::imap(function(dfls, covar_name){
+                dfls |> 
+                  purrr::imap(function(df, exp_name) {
+                    df |>
+                      writexl::write_xlsx(
+                        here::here(
+                          "tables", "mwas_results", study, 
+                          population, covar_name,
+                          glue::glue("mwas_{mode}_{exp_name}_{study}_{population}_{covar_name}_sig_annotated.xlsx"))
+                      )
+                    message(paste0("MWAS results with annotation for ",
+                                   exp_name, " ", mode, " in ", 
+                                   study, "_", population, 
+                                   "with covariate ", covar_name,
+                                   " saved successfully!"))
+                  })
               })
           })
       })
