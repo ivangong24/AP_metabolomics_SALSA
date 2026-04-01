@@ -77,8 +77,9 @@ exposure_vars_list <- combined_data_list_new |>
   })
 
 # Create output directory
-combined_results_list_c18 |> 
-  purrr::imap(function(data, study){
+list(combined_results_list_c18, exposure_vars_list, 
+     names(exposure_vars_list)) |> 
+  purrr::pmap(function(data, exposure_vars, study){
     names(data) |> 
       purrr::map(function(population){
         names(covar_list) |> 
@@ -89,19 +90,6 @@ combined_results_list_c18 |>
                                       covar_names, exposure), 
                            showWarnings = FALSE, recursive = TRUE)
               })
-          })
-      })
-  })
-
-names(combined_results_list_c18) |> 
-  purrr::map(function(population){
-    names(covar_list) |> 
-      purrr::map(function(covar_names){
-        exposure_vars |> 
-          purrr::map(function(exposure){
-            dir.create(here::here("figures", "mwas", population, 
-                                  covar_names, exposure), 
-                       showWarnings = FALSE, recursive = TRUE)
           })
       })
   })
@@ -235,14 +223,17 @@ study_names <- names(mwas_results_list_c18)
 population_names <- names(mwas_results_list_c18[["total"]])
 covar_names <- names(covar_list)
 
-volcano_plots <- study_names |> 
-  purrr::walk(function(study){
+volcano_plots <- list(exposure_vars_list, study_names) |> 
+  purrr::pmap(function(exposure_vars, study){
     population_names |>
-      purrr::walk(function(pop) {
+      purrr::set_names() |>
+      purrr::map(function(pop) {
         covar_names |>
-          purrr::walk(function(cov) {
+          purrr::set_names() |>
+          purrr::map(function(cov) {
             exposure_vars |>
-              purrr::walk(function(exp) {
+              purrr::set_names() |>
+              purrr::map(function(exp) {
                 create_volcano_plot(
                   mwas_result_c18 = 
                     mwas_results_list_c18[[study]][[pop]][[cov]][[exp]],
@@ -551,11 +542,14 @@ create_covariate_scatter <- function(mwas_list_c18, mwas_list_hilic,
 # Compare demcind vs all and no demcind vs all (faceted)
 
 study_names |>
-  purrr::walk(function(study) {
+  purrr::set_names() |>
+  purrr::map(function(study) {
     covar_names |>
-      purrr::walk(function(cov) {
+      purrr::set_names() |>
+      purrr::map(function(cov) {
         exposure_vars_list[[study]] |>
-          purrr::walk(function(exp) {
+          purrr::set_names() |>
+          purrr::map(function(exp) {
             p <- create_population_scatter(
               mwas_results_list_c18[[study]],
               mwas_results_list_hilic[[study]],
@@ -576,11 +570,14 @@ study_names |>
 # Compare covar vs covar_sen within each population and exposure
 
 study_names |>
-  purrr::walk(function(study) {
+  purrr::set_names() |>
+  purrr::map(function(study) {
     population_names |>
-      purrr::walk(function(pop) {
+      purrr::set_names() |>
+      purrr::map(function(pop) {
         exposure_vars_list[[study]] |>
-          purrr::walk(function(exp) {
+          purrr::set_names() |>
+          purrr::map(function(exp) {
             p <- create_covariate_scatter(
               mwas_results_list_c18[[study]],
               mwas_results_list_hilic[[study]],
@@ -709,7 +706,8 @@ create_composite_scatter <- function(mwas_list_c18, mwas_list_hilic,
 # Create and save composite comparison scatter plots --------------------------
 
 study_names |>
-  purrr::walk(function(study) {
+  purrr::set_names() |>
+  purrr::map(function(study) {
     # Define composite exposure pairs per study
     exp_vars <- exposure_vars_list[[study]]
     composite_pairs <- list(
@@ -718,9 +716,11 @@ study_names |>
     )
 
     population_names |>
-      purrr::walk(function(pop) {
+      purrr::set_names() |>
+      purrr::map(function(pop) {
         covar_names |>
-          purrr::walk(function(cov) {
+          purrr::set_names() |>
+          purrr::map(function(cov) {
             purrr::iwalk(composite_pairs, function(pair, method) {
               p <- create_composite_scatter(
                 mwas_results_list_c18[[study]],
@@ -812,13 +812,17 @@ create_combined_panel <- function(exposure_name, population, covar_set,
 # Create and save combined panels for all populations x covariates x exposures
 
 study_names |>
-  purrr::walk(function(study) {
+  purrr::set_names() |>
+  purrr::map(function(study) {
     population_names |>
-      purrr::walk(function(pop) {
+      purrr::set_names() |>
+      purrr::map(function(pop) {
         covar_names |>
-          purrr::walk(function(cov) {
+          purrr::set_names() |>
+          purrr::map(function(cov) {
             exposure_vars_list[[study]] |>
-              purrr::walk(function(exp) {
+              purrr::set_names() |>
+              purrr::map(function(exp) {
                 p <- create_combined_panel(exp, pop, cov, study)
                 ggsave(
                   filename = here::here("figures", "mwas", study, pop, cov, exp,
@@ -907,15 +911,20 @@ create_sig_heatmap <- function(mwas_results_exposure_list, column_type = "C18",
 # Create heatmaps ------------------------------------------------------------
 
 study_names |>
-  purrr::walk(function(study) {
+  purrr::set_names() |>
+  purrr::map(function(study) {
     population_names |>
-      purrr::walk(function(pop) {
+      purrr::set_names() |>
+      purrr::map(function(pop) {
         covar_names |>
-          purrr::walk(function(cov) {
-            create_sig_heatmap(mwas_results_list_c18[[study]][[pop]][[cov]], "C18",
+          purrr::set_names() |>
+          purrr::map(function(cov) {
+            create_sig_heatmap(mwas_results_list_c18[[study]][[pop]][[cov]], 
+                               "C18",
                                population = pop, covar_set = cov,
                                study = study, top_n = 50)
-            create_sig_heatmap(mwas_results_list_hilic[[study]][[pop]][[cov]], "HILIC",
+            create_sig_heatmap(mwas_results_list_hilic[[study]][[pop]][[cov]], 
+                               "HILIC",
                                population = pop, covar_set = cov,
                                study = study, top_n = 50)
           })
@@ -984,11 +993,14 @@ create_exposure_correlation <- function(mwas_results_exposure_list,
 }
 
 study_names |>
-  purrr::walk(function(study) {
+  purrr::set_names() |>
+  purrr::map(function(study) {
     population_names |>
-      purrr::walk(function(pop) {
+      purrr::set_names() |>
+      purrr::map(function(pop) {
         covar_names |>
-          purrr::walk(function(cov) {
+          purrr::set_names() |>
+          purrr::map(function(cov) {
             create_exposure_correlation(mwas_results_list_c18[[study]][[pop]][[cov]], "C18",
                                         population = pop, covar_set = cov,
                                         study = study)
@@ -1059,14 +1071,18 @@ create_manhattan <- function(mwas_result, exposure_name,
 
 
 study_names |>
-  purrr::walk(function(study) {
+  purrr::set_names() |>
+  purrr::map(function(study) {
     population_names |>
-      purrr::walk(function(pop) {
+      purrr::set_names() |>
+      purrr::map(function(pop) {
         covar_names |>
-          purrr::walk(function(cov) {
-            purrr::walk(exposure_vars_list[[study]], function(exp) {
+          purrr::set_names() |>
+          purrr::map(function(cov) {
+            purrr::map(exposure_vars_list[[study]], function(exp) {
               c("C18", "HILIC") |>
-                purrr::walk(function(col_type) {
+                purrr::set_names() |>
+                purrr::map(function(col_type) {
                   mwas_list <- if (col_type == "C18") {
                     mwas_results_list_c18[[study]]
                   } else {
