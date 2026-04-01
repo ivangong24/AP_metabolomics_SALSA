@@ -166,7 +166,7 @@ covar_list <- list(
 )
 
 ## Extract all exposure variables (air toxicants)
-exposure_vars_list <- combined_data_list_c18 |> 
+exposure_vars_list <- combined_data_list_new |> 
   purrr::map(function(datalist){
     datalist[["all"]][["covar"]] |>
       dplyr::select(starts_with("comp_"), ends_with("iqr")) |>
@@ -232,6 +232,8 @@ list(
 n_workers <- max(1, future::availableCores() - 1)
 message(paste0("Setting up parallel plan with ", n_workers, " workers..."))
 future::plan(future::multisession, workers = n_workers)
+
+## WARNING! This step could take a very long time (could run for several days) ... 
 
 ## Estimate duplicate correlation for each exposure and population
 system.time({

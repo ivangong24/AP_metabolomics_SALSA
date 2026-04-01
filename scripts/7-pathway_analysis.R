@@ -27,9 +27,29 @@
 
 source(here::here("scripts", "1-functions.R"))
 source(here::here("scripts", "2-load_data.R"))
+load(here::here("data", "processed", "combined_data_list_new.RData"))
 load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
 
 # Create output directories --------------------------------------------------
+
+# clean up the combined datalist
+combined_data_list_new <- combined_data_list_new |> 
+  purrr::imap(function(datalist, study){
+    datalist |> 
+      purrr::imap(function(data_list, population){
+        data_list |> 
+          purrr::imap(function(data, covar_name){
+            if (study == "total") {
+              data |> 
+                dplyr::select(-matches("cox"))
+            } else {
+              data |> 
+                dplyr::select(-matches("exp|wqs|qgcomp_all|qgcomp_traffic|qgcomp_metal"))
+            }
+          })
+      })
+  })
+
 
 covar_list <- list(
   covar = quote_all(age_at_blooddraw, gender, edu_year, mh62, 
@@ -42,9 +62,16 @@ covar_list <- list(
   
 )
 
+exposure_vars_list <- combined_data_list_new |> 
+  purrr::map(function(datalist){
+    datalist[["all"]][["covar"]] |>
+      dplyr::select(starts_with("comp_"), ends_with("iqr")) |>
+      colnames()
+  })
+
 list("Input", "Output") |> 
   purrr::map(function(dir){
-    combined_data_list_c18 |> 
+    combined_data_list_new |> 
       purrr::imap(function(data, study){
         names(data) |> 
           purrr::walk(function(population){
@@ -239,9 +266,11 @@ system.time({
   combined_results_list_c18 |> 
     purrr::imap(function(data, study){
       names(data) |>
-        purrr::walk(function(population) {
+        purrr::set_names() |>
+        purrr::map(function(population) {
           names(covar_list) |>
-            purrr::walk(function(covar_name) {
+            purrr::set_names() |>
+            purrr::map(function(covar_name) {
               input_dir <- here::here("metaboAnalyst", "Input", study,
                                       population, covar_name)
               input_files <- list.files(input_dir, pattern = "\\.txt$",
@@ -259,12 +288,13 @@ system.time({
                                  exp_name, " (", study, "_", population, " - ",
                                  covar_name, ") ---"))
                   
-                  tryCatch(
+                  output_dir <- here::here("metaboAnalyst", "Output",
+                                            study, population, covar_name,
+                                            exp_name)
+                  result <- tryCatch(
                     run_mummichog(
                       input_file = input_file,
-                      output_dir = here::here("metaboAnalyst", "Output", 
-                                              study, population, covar_name,
-                                              exp_name),
+                      output_dir = output_dir,
                       p_cutoff = 0.1,
                       organism = "hsa_mfn",
                       instrument_ppm = 10.0,
@@ -282,6 +312,10 @@ system.time({
                       return(NULL)
                     }
                   )
+                  # Remove large mum.RData to free disk space
+                  mum_rdata <- file.path(output_dir, "mum.RData")
+                  if (file.exists(mum_rdata)) file.remove(mum_rdata)
+                  result
                 })
             })
         }) 
@@ -296,47 +330,51 @@ save(mummichog_results_combined,
 # Extract and save Mummichog result tables -------------------------------------
 
 mummichog_results_combined |>
-  purrr::imap(function(result_by_covar, population) {
-    result_by_covar |>
-      purrr::imap(function(result_list, covar_name) {
-        # Save result tables to Excel
-        result_tables <- result_list |>
-          purrr::compact() |>
-          purrr::map(~ .x$result_table)
+  purrr::imap(function(pop_list, study) {
+    pop_list |>
+      purrr::imap(function(covar_list_res, population) {
+        covar_list_res |>
+          purrr::imap(function(result_list, covar_name) {
+            # Save result tables to Excel
+            result_tables <- result_list |>
+              purrr::compact() |>
+              purrr::map(~ .x$result_table)
 
-        if (length(result_tables) > 0) {
-          dir.create(here::here("tables", "mummichog_results",
-                                population, covar_name),
-                     showWarnings = FALSE, recursive = TRUE)
+            if (length(result_tables) > 0) {
+              dir.create(here::here("tables", "mummichog_results", study,
+                                    population, covar_name),
+                         showWarnings = FALSE, recursive = TRUE)
 
-          result_tables |>
-            purrr::imap(function(tbl, exp_name) {
-              writexl::write_xlsx(
-                tbl,
-                path = here::here(
-                  "tables", "mummichog_results", population, covar_name,
-                  glue::glue("mummichog_{exp_name}_{population}_{covar_name}.xlsx"))
-              )
-            })
-        }
-
-        # Save plots
-        dir.create(here::here("figures", "mummichog", population, covar_name),
-                   showWarnings = FALSE, recursive = TRUE)
-
-        result_list |>
-          purrr::compact() |>
-          purrr::imap(function(res, exp_name) {
-            if (!is.null(res$plot)) {
-              ggsave(
-                filename = here::here(
-                  "figures", "mummichog", population, covar_name,
-                  glue::glue("mummichog_{exp_name}_{population}_{covar_name}.png")),
-                plot = res$plot +
-                  ggtitle(paste0("Mummichog: ", exp_name)),
-                width = 10, height = 8, dpi = 300
-              )
+              result_tables |>
+                purrr::imap(function(tbl, exp_name) {
+                  writexl::write_xlsx(
+                    tbl,
+                    path = here::here(
+                      "tables", "mummichog_results", study, population, covar_name,
+                      glue::glue("mummichog_{exp_name}_{study}_{population}_{covar_name}.xlsx"))
+                  )
+                })
             }
+
+            # Save plots
+            dir.create(here::here("figures", "mummichog", study,
+                                  population, covar_name),
+                       showWarnings = FALSE, recursive = TRUE)
+
+            result_list |>
+              purrr::compact() |>
+              purrr::imap(function(res, exp_name) {
+                if (!is.null(res$plot)) {
+                  ggsave(
+                    filename = here::here(
+                      "figures", "mummichog", study, population, covar_name,
+                      glue::glue("mummichog_{exp_name}_{study}_{population}_{covar_name}.png")),
+                    plot = res$plot +
+                      ggtitle(paste0("Mummichog: ", exp_name)),
+                    width = 10, height = 8, dpi = 300
+                  )
+                }
+              })
           })
       })
   })
@@ -358,36 +396,48 @@ source(here::here("scripts", "metapone_pathway.R"))
 
 # Write Metapone input files (reuse combined feature tables from Section 1) ----
 
-names(combined_results_list_c18) |>
-  purrr::walk(function(population) {
-    names(covar_list) |> 
-      purrr::walk(function(covar_name) {
-        dir.create(here::here("Metapone", "Input", population, covar_name),
-                   showWarnings = FALSE, recursive = TRUE)
-      })
-  })
-
-mummichog_input_list_combined |>
-  purrr::imap(function(dflist, population) {
-    dflist |>
-      purrr::imap(function(dfls, covar_name){
-        dfls |> 
-          purrr::imap(function(df, exp) {
-            message(paste0("Creating Metapone input for: ", 
-                           population, " - ", covar_name, " - ", exp))
-            write.table(
-              df,
-              file = here::here("Metapone", "Input", population, covar_name,
-                                paste0("mwas_", exp, "_", 
-                                       population, "_", covar_name, ".txt")),
-              row.names = FALSE,
-              col.names = TRUE,
-              quote = FALSE,
-              sep = "\t"
-            )
+combined_data_list_new |> 
+  purrr::imap(function(data, study){
+    names(data) |> 
+      purrr::walk(function(population) {
+        names(covar_list) |> 
+          purrr::walk(function(covar_name) {
+            dir.create(here::here("Metapone", "Input", study, 
+                                  population, covar_name),
+                       showWarnings = FALSE, recursive = TRUE)
           })
       })
   })
+
+
+mummichog_input_list_combined |>
+  purrr::imap(function(datalist, study) {
+    datalist |> 
+      purrr::imap(function(dflist, population) {
+        dflist |>
+          purrr::imap(function(dfls, covar_name){
+            dfls |> 
+              purrr::imap(function(df, exp) {
+                message(paste0("Creating Metapone input for: ", 
+                               study, "_", population, 
+                               " - ", covar_name, " - ", exp))
+                write.table(
+                  df,
+                  file = here::here("Metapone", "Input", study, 
+                                    population, covar_name,
+                                    paste0("mwas_", exp, "_", study, "_",
+                                           population, "_", 
+                                           covar_name, ".txt")),
+                  row.names = FALSE,
+                  col.names = TRUE,
+                  quote = FALSE,
+                  sep = "\t"
+                )
+              })
+          })
+      })
+  })
+
 
 message("Metapone input files created in Metapone/Input/")
 
@@ -396,43 +446,48 @@ message("Metapone input files created in Metapone/Input/")
 message("Running metapone pathway analysis...")
 
 system.time({
-  names(combined_results_list_c18) |>
-    purrr::set_names() |>
-    purrr::map(function(population) {
-      names(covar_list) |> 
-        purrr::map(function(covar_name) {
-          input_dir <- here::here("Metapone", "Input", population, covar_name)
-          input_files <- list.files(input_dir, pattern = "\\.txt$",
-                                    full.names = TRUE)
-          input_files |>
-            purrr::set_names(
-              basename(input_files) |>
-                stringr::str_remove("\\.txt$") |>
-                stringr::str_remove(paste0("^mwas_")) |>
-                stringr::str_remove(paste0("_", population, 
-                                           "_", covar_name, "$"))
-            ) |>
-            purrr::imap(function(input_file, exp_name) {
-              message(paste0("\n---Running metapone for: ", 
-                             exp_name, " (", population, " - ", 
-                             covar_name, ") ---"))
-
-              tryCatch(
-                run_metapone(
-                  input_file = input_file,
-                  p_cutoff = 0.05,
-                  num_permutations = 200,
-                  match_tol_ppm = 10,
-                  pos.adductlist = c("M+H", "M+Na", "M+"),
-                  neg.adductlist = c("M-H", "M-2H", "M-H2O-H")
-                ),
-                error = function(e) {
-                  warning(paste0("metapone failed for ", exp_name,
-                                 " (", population, " - ", 
-                                 covar_name, "): ", e$message))
-                  return(NULL)
-                }
-              )
+  combined_results_list_c18 |> 
+    purrr::imap(function(data, study){
+      names(data) |>
+        purrr::set_names() |>
+        purrr::map(function(population) {
+          names(covar_list) |>
+            purrr::set_names() |>
+            purrr::map(function(covar_name) {
+              input_dir <- here::here("Metapone", "Input", 
+                                      study ,population, covar_name)
+              input_files <- list.files(input_dir, pattern = "\\.txt$",
+                                        full.names = TRUE)
+              input_files |>
+                purrr::set_names(
+                  basename(input_files) |>
+                    stringr::str_remove("\\.txt$") |>
+                    stringr::str_remove(paste0("^mwas_")) |>
+                    stringr::str_remove(paste0("_", study, "_", population, 
+                                               "_", covar_name, "$"))
+                ) |>
+                purrr::imap(function(input_file, exp_name) {
+                  message(paste0("\n---Running metapone for: ", 
+                                 exp_name, " (", study, "_", population, " - ", 
+                                 covar_name, ") ---"))
+                  
+                  tryCatch(
+                    run_metapone(
+                      input_file = input_file,
+                      p_cutoff = 0.05,
+                      num_permutations = 200,
+                      match_tol_ppm = 10,
+                      pos.adductlist = c("M+H", "M+Na", "M+"),
+                      neg.adductlist = c("M-H", "M-2H", "M-H2O-H")
+                    ),
+                    error = function(e) {
+                      warning(paste0("metapone failed for ", exp_name,
+                                     " (", study, "_", population, " - ", 
+                                     covar_name, "): ", e$message))
+                      return(NULL)
+                    }
+                  )
+                })
             })
         })
     }) -> metapone_results_combined
@@ -446,44 +501,52 @@ save(metapone_results_combined,
 # Extract and save metapone result tables --------------------------------------
 
 metapone_results_combined |>
-  purrr::imap(function(result_list, population) {
-    # Save result tables to Excel
-    result_tables <- result_list |>
-      purrr::compact() |>
-      purrr::map(~ .x$result_table)
+  purrr::imap(function(pop_list, study) {
+    pop_list |>
+      purrr::imap(function(covar_list_res, population) {
+        covar_list_res |>
+          purrr::imap(function(result_list, covar_name) {
+            # Save result tables to Excel
+            result_tables <- result_list |>
+              purrr::compact() |>
+              purrr::map(~ .x$result_table)
 
-    if (length(result_tables) > 0) {
-      dir.create(here::here("tables", "metapone_results", population),
-                 showWarnings = FALSE, recursive = TRUE)
+            if (length(result_tables) > 0) {
+              dir.create(here::here("tables", "metapone_results", study,
+                                    population, covar_name),
+                         showWarnings = FALSE, recursive = TRUE)
 
-      result_tables |>
-        purrr::imap(function(tbl, exp_name) {
-          writexl::write_xlsx(
-            tbl,
-            path = here::here(
-              "tables", "metapone_results", population,
-              glue::glue("metapone_{exp_name}_{population}.xlsx"))
-          )
-        })
-    }
+              result_tables |>
+                purrr::imap(function(tbl, exp_name) {
+                  writexl::write_xlsx(
+                    tbl,
+                    path = here::here(
+                      "tables", "metapone_results", study, population, covar_name,
+                      glue::glue("metapone_{exp_name}_{study}_{population}_{covar_name}.xlsx"))
+                  )
+                })
+            }
 
-    # Save plots
-    dir.create(here::here("figures", "metapone", population),
-               showWarnings = FALSE, recursive = TRUE)
+            # Save plots
+            dir.create(here::here("figures", "metapone", study,
+                                  population, covar_name),
+                       showWarnings = FALSE, recursive = TRUE)
 
-    result_list |>
-      purrr::compact() |>
-      purrr::imap(function(res, exp_name) {
-        if (!is.null(res$plot)) {
-          ggsave(
-            filename = here::here(
-              "figures", "metapone", population,
-              glue::glue("metapone_{exp_name}_{population}.png")),
-            plot = res$plot +
-              ggtitle(paste0("metapone: ", exp_name)),
-            width = 10, height = 8, dpi = 300
-          )
-        }
+            result_list |>
+              purrr::compact() |>
+              purrr::imap(function(res, exp_name) {
+                if (!is.null(res$plot)) {
+                  ggsave(
+                    filename = here::here(
+                      "figures", "metapone", study, population, covar_name,
+                      glue::glue("metapone_{exp_name}_{study}_{population}_{covar_name}.png")),
+                    plot = res$plot +
+                      ggtitle(paste0("metapone: ", exp_name)),
+                    width = 10, height = 8, dpi = 300
+                  )
+                }
+              })
+          })
       })
   })
 

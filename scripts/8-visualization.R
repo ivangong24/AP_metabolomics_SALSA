@@ -32,8 +32,30 @@ load(here::here("data", "metabolomics", "results",
 load(here::here("data", "metabolomics", "results",
                 "mwas_annotation.RData"))
 
+load(here::here("data", "processed", "combined_data_list_new.RData"))
+
 load(here::here("data", "metabolomics", "results",
                 "metapone_results_all.RData"))
+
+# Create output directories --------------------------------------------------
+
+# clean up the combined datalist
+combined_data_list_new <- combined_data_list_new |> 
+  purrr::imap(function(datalist, study){
+    datalist |> 
+      purrr::imap(function(data_list, population){
+        data_list |> 
+          purrr::imap(function(data, covar_name){
+            if (study == "total") {
+              data |> 
+                dplyr::select(-matches("cox"))
+            } else {
+              data |> 
+                dplyr::select(-matches("exp|wqs|qgcomp_all|qgcomp_traffic|qgcomp_metal"))
+            }
+          })
+      })
+  })
 
 
 covar_list <- list(
@@ -47,9 +69,30 @@ covar_list <- list(
   
 )
 
-exposure_vars <- names(combined_results_list_c18[["all"]][["covar"]])
+exposure_vars_list <- combined_data_list_new |> 
+  purrr::map(function(datalist){
+    datalist[["all"]][["covar"]] |>
+      dplyr::select(starts_with("comp_"), ends_with("iqr")) |>
+      colnames()
+  })
 
 # Create output directory
+combined_results_list_c18 |> 
+  purrr::imap(function(data, study){
+    names(data) |> 
+      purrr::map(function(population){
+        names(covar_list) |> 
+          purrr::map(function(covar_names){
+            exposure_vars |> 
+              purrr::map(function(exposure){
+                dir.create(here::here("figures", "mwas", study, population, 
+                                      covar_names, exposure), 
+                           showWarnings = FALSE, recursive = TRUE)
+              })
+          })
+      })
+  })
+
 names(combined_results_list_c18) |> 
   purrr::map(function(population){
     names(covar_list) |> 
@@ -188,44 +231,55 @@ create_volcano_plot <- function(mwas_result_c18, mwas_result_hilic,
 
 # Create volcano plots for all populations x covariate sets ------------------
 
-population_names <- names(mwas_results_list_c18)
+study_names <- names(mwas_results_list_c18)
+population_names <- names(mwas_results_list_c18[["total"]])
 covar_names <- names(covar_list)
 
-volcano_plots <- population_names |>
-  purrr::set_names() |>
-  purrr::map(function(pop) {
-    covar_names |>
-      purrr::set_names() |>
-      purrr::map(function(cov) {
-        exposure_vars |>
-          purrr::set_names() |>
-          purrr::map(function(exp) {
-            create_volcano_plot(
-              mwas_result_c18 = mwas_results_list_c18[[pop]][[cov]][[exp]],
-              mwas_result_hilic = mwas_results_list_hilic[[pop]][[cov]][[exp]],
-              annotation_result_c18 = mwas_annotated_list_c18[[pop]][[cov]][[exp]],
-              annotation_result_hilic = mwas_annotated_list_hilic[[pop]][[cov]][[exp]],
-              exposure_name = exp
-            )
+volcano_plots <- study_names |> 
+  purrr::walk(function(study){
+    population_names |>
+      purrr::walk(function(pop) {
+        covar_names |>
+          purrr::walk(function(cov) {
+            exposure_vars |>
+              purrr::walk(function(exp) {
+                create_volcano_plot(
+                  mwas_result_c18 = 
+                    mwas_results_list_c18[[study]][[pop]][[cov]][[exp]],
+                  mwas_result_hilic = 
+                    mwas_results_list_hilic[[study]][[pop]][[cov]][[exp]],
+                  annotation_result_c18 = 
+                    mwas_annotated_list_c18[[study]][[pop]][[cov]][[exp]],
+                  annotation_result_hilic = 
+                    mwas_annotated_list_hilic[[study]][[pop]][[cov]][[exp]],
+                  exposure_name = exp
+                )
+              })
           })
       })
   })
 
 
+
 # Save volcano plots ---------------------------------------------------------
 
-population_names |>
-  purrr::walk(function(pop) {
-    covar_names |>
-      purrr::walk(function(cov) {
-        purrr::iwalk(volcano_plots[[pop]][[cov]], function(p, exp) {
-          ggsave(
-            filename = here::here("figures", "mwas", pop, cov, exp,
-                                  glue::glue("volcano_{exp}.png")),
-            plot = p,
-            width = 10, height = 6, dpi = 300
-          )
-        })
+study_names |> 
+  purrr::walk(function(study){
+    population_names |>
+      purrr::walk(function(pop) {
+        covar_names |>
+          purrr::walk(function(cov) {
+            purrr::iwalk(
+              volcano_plots[[study]][[pop]][[cov]], 
+              function(p, exp) {
+                ggsave(
+                  filename = here::here("figures", "mwas", study, pop, cov, exp,
+                                        glue::glue("volcano_{exp}.png")),
+                  plot = p,
+                  width = 10, height = 6, dpi = 300
+                )
+            })
+          })
       })
   })
 
@@ -496,20 +550,24 @@ create_covariate_scatter <- function(mwas_list_c18, mwas_list_hilic,
 # Create and save population comparison scatter plots -------------------------
 # Compare demcind vs all and no demcind vs all (faceted)
 
-covar_names |>
-  purrr::walk(function(cov) {
-    exposure_vars |>
-      purrr::walk(function(exp) {
-        p <- create_population_scatter(
-          mwas_results_list_c18, mwas_results_list_hilic,
-          covar_set = cov, exposure_name = exp
-        )
-        ggsave(
-          filename = here::here("figures", "mwas", "all", cov, exp,
-                                glue::glue("scatter_pop_{exp}.png")),
-          plot = p,
-          width = 14, height = 7, dpi = 300
-        )
+study_names |>
+  purrr::walk(function(study) {
+    covar_names |>
+      purrr::walk(function(cov) {
+        exposure_vars_list[[study]] |>
+          purrr::walk(function(exp) {
+            p <- create_population_scatter(
+              mwas_results_list_c18[[study]],
+              mwas_results_list_hilic[[study]],
+              covar_set = cov, exposure_name = exp
+            )
+            ggsave(
+              filename = here::here("figures", "mwas", study, "all", cov, exp,
+                                    glue::glue("scatter_pop_{exp}.png")),
+              plot = p,
+              width = 14, height = 7, dpi = 300
+            )
+          })
       })
   })
 
@@ -517,22 +575,26 @@ covar_names |>
 # Create and save covariate comparison scatter plots --------------------------
 # Compare covar vs covar_sen within each population and exposure
 
-population_names |>
-  purrr::walk(function(pop) {
-    exposure_vars |>
-      purrr::walk(function(exp) {
-        p <- create_covariate_scatter(
-          mwas_results_list_c18, mwas_results_list_hilic,
-          population = pop,
-          cov1 = "covar", cov2 = "covar_sen",
-          exposure_name = exp
-        )
-        ggsave(
-          filename = here::here("figures", "mwas", pop, "covar", exp,
-                                glue::glue("scatter_cov_{exp}.png")),
-          plot = p,
-          width = 8, height = 7, dpi = 300
-        )
+study_names |>
+  purrr::walk(function(study) {
+    population_names |>
+      purrr::walk(function(pop) {
+        exposure_vars_list[[study]] |>
+          purrr::walk(function(exp) {
+            p <- create_covariate_scatter(
+              mwas_results_list_c18[[study]],
+              mwas_results_list_hilic[[study]],
+              population = pop,
+              cov1 = "covar", cov2 = "covar_sen",
+              exposure_name = exp
+            )
+            ggsave(
+              filename = here::here("figures", "mwas", study, pop, "covar", exp,
+                                    glue::glue("scatter_cov_{exp}.png")),
+              plot = p,
+              width = 8, height = 7, dpi = 300
+            )
+          })
       })
   })
 
@@ -644,32 +706,37 @@ create_composite_scatter <- function(mwas_list_c18, mwas_list_hilic,
 }
 
 
-# Define composite exposure pairs
-composite_pairs <- list(
-  WQS = list(all = exposure_vars[1], traffic = exposure_vars[2]),
-  qgcomp = list(all = exposure_vars[4], traffic = exposure_vars[5])
-)
-
 # Create and save composite comparison scatter plots --------------------------
 
-population_names |>
-  purrr::walk(function(pop) {
-    covar_names |>
-      purrr::walk(function(cov) {
-        purrr::iwalk(composite_pairs, function(pair, method) {
-          p <- create_composite_scatter(
-            mwas_results_list_c18, mwas_results_list_hilic,
-            exp_all = pair$all, exp_traffic = pair$traffic,
-            population = pop, covar_set = cov,
-            method_label = method
-          )
-          ggsave(
-            filename = here::here("figures", "mwas", pop, cov,
-                                  glue::glue("scatter_composite_{method}.png")),
-            plot = p,
-            width = 8, height = 7, dpi = 300
-          )
-        })
+study_names |>
+  purrr::walk(function(study) {
+    # Define composite exposure pairs per study
+    exp_vars <- exposure_vars_list[[study]]
+    composite_pairs <- list(
+      WQS = list(all = exp_vars[1], traffic = exp_vars[2]),
+      qgcomp = list(all = exp_vars[4], traffic = exp_vars[5])
+    )
+
+    population_names |>
+      purrr::walk(function(pop) {
+        covar_names |>
+          purrr::walk(function(cov) {
+            purrr::iwalk(composite_pairs, function(pair, method) {
+              p <- create_composite_scatter(
+                mwas_results_list_c18[[study]],
+                mwas_results_list_hilic[[study]],
+                exp_all = pair$all, exp_traffic = pair$traffic,
+                population = pop, covar_set = cov,
+                method_label = method
+              )
+              ggsave(
+                filename = here::here("figures", "mwas", study, pop, cov,
+                                      glue::glue("scatter_composite_{method}.png")),
+                plot = p,
+                width = 8, height = 7, dpi = 300
+              )
+            })
+          })
       })
   })
 
@@ -683,7 +750,8 @@ population_names |>
 # Row 2: population comparison | covariate comparison
 # Row 3: WQS composite comparison | qgcomp composite comparison
 
-create_combined_panel <- function(exposure_name, population, covar_set) {
+create_combined_panel <- function(exposure_name, population, covar_set,
+                                  study) {
 
   # Common legend theme: boxed legends
   legend_theme <- theme(
@@ -697,7 +765,7 @@ create_combined_panel <- function(exposure_name, population, covar_set) {
   )
 
   # p1: volcano — show Column legend (ordered first) + Significance
-  p1 <- volcano_plots[[population]][[covar_set]][[exposure_name]] +
+  p1 <- volcano_plots[[study]][[population]][[covar_set]][[exposure_name]] +
     labs(title = NULL) +
     guides(
       shape = guide_legend(order = 1),
@@ -707,7 +775,7 @@ create_combined_panel <- function(exposure_name, population, covar_set) {
 
   # p2: population scatter — color legend only, no Column
   p2 <- create_population_scatter(
-    mwas_results_list_c18, mwas_results_list_hilic,
+    mwas_results_list_c18[[study]], mwas_results_list_hilic[[study]],
     covar_set = covar_set, exposure_name = exposure_name
   ) +
     labs(title = NULL) +
@@ -716,7 +784,7 @@ create_combined_panel <- function(exposure_name, population, covar_set) {
 
   # p3: covariate scatter — color legend only, no Column
   p3 <- create_covariate_scatter(
-    mwas_results_list_c18, mwas_results_list_hilic,
+    mwas_results_list_c18[[study]], mwas_results_list_hilic[[study]],
     population = population,
     cov1 = "covar", cov2 = "covar_sen",
     exposure_name = exposure_name
@@ -743,19 +811,22 @@ create_combined_panel <- function(exposure_name, population, covar_set) {
 
 # Create and save combined panels for all populations x covariates x exposures
 
-population_names |>
-  purrr::walk(function(pop) {
-    covar_names |>
-      purrr::walk(function(cov) {
-        exposure_vars |>
-          purrr::walk(function(exp) {
-            p <- create_combined_panel(exp, pop, cov)
-            ggsave(
-              filename = here::here("figures", "mwas", pop, cov, exp,
-                                    glue::glue("combined_panel_{exp}.png")),
-              plot = p,
-              width = 24, height = 8, dpi = 300
-            )
+study_names |>
+  purrr::walk(function(study) {
+    population_names |>
+      purrr::walk(function(pop) {
+        covar_names |>
+          purrr::walk(function(cov) {
+            exposure_vars_list[[study]] |>
+              purrr::walk(function(exp) {
+                p <- create_combined_panel(exp, pop, cov, study)
+                ggsave(
+                  filename = here::here("figures", "mwas", study, pop, cov, exp,
+                                        glue::glue("combined_panel_{exp}.png")),
+                  plot = p,
+                  width = 24, height = 8, dpi = 300
+                )
+              })
           })
       })
   })
@@ -769,7 +840,7 @@ population_names |>
 
 create_sig_heatmap <- function(mwas_results_exposure_list, column_type = "C18",
                                 population = "all", covar_set = "covar",
-                                top_n = 50) {
+                                study = "total", top_n = 50) {
 
   # Get top metabolites across all exposures
   all_sig <- mwas_results_exposure_list |>
@@ -825,7 +896,7 @@ create_sig_heatmap <- function(mwas_results_exposure_list, column_type = "C18",
     fontsize_col = 10,
     main = paste0("Top ", top_n, " Significant Metabolites - ", column_type,
                   " (", population, ", ", covar_set, ")"),
-    filename = here::here("figures", "mwas", population, covar_set,
+    filename = here::here("figures", "mwas", study, population, covar_set,
                           glue::glue("heatmap_top{top_n}_{column_type}.png")),
     width = 10,
     height = 12
@@ -835,14 +906,19 @@ create_sig_heatmap <- function(mwas_results_exposure_list, column_type = "C18",
 
 # Create heatmaps ------------------------------------------------------------
 
-population_names |>
-  purrr::walk(function(pop) {
-    covar_names |>
-      purrr::walk(function(cov) {
-        create_sig_heatmap(mwas_results_list_c18[[pop]][[cov]], "C18",
-                           population = pop, covar_set = cov, top_n = 50)
-        create_sig_heatmap(mwas_results_list_hilic[[pop]][[cov]], "HILIC",
-                           population = pop, covar_set = cov, top_n = 50)
+study_names |>
+  purrr::walk(function(study) {
+    population_names |>
+      purrr::walk(function(pop) {
+        covar_names |>
+          purrr::walk(function(cov) {
+            create_sig_heatmap(mwas_results_list_c18[[study]][[pop]][[cov]], "C18",
+                               population = pop, covar_set = cov,
+                               study = study, top_n = 50)
+            create_sig_heatmap(mwas_results_list_hilic[[study]][[pop]][[cov]], "HILIC",
+                               population = pop, covar_set = cov,
+                               study = study, top_n = 50)
+          })
       })
   })
 
@@ -856,7 +932,8 @@ population_names |>
 create_exposure_correlation <- function(mwas_results_exposure_list,
                                         column_type = "C18",
                                         population = "all",
-                                        covar_set = "covar") {
+                                        covar_set = "covar",
+                                        study = "total") {
 
   # Get common significant metabolites
   sig_mets <- mwas_results_exposure_list |>
@@ -899,21 +976,26 @@ create_exposure_correlation <- function(mwas_results_exposure_list,
     cluster_cols = TRUE,
     main = paste0("Correlation of Effect Sizes - ", column_type,
                   " (", population, ", ", covar_set, ")"),
-    filename = here::here("figures", "mwas", population, covar_set,
+    filename = here::here("figures", "mwas", study, population, covar_set,
                           glue::glue("exposure_correlation_{column_type}.png")),
     width = 10,
     height = 8
   )
 }
 
-population_names |>
-  purrr::walk(function(pop) {
-    covar_names |>
-      purrr::walk(function(cov) {
-        create_exposure_correlation(mwas_results_list_c18[[pop]][[cov]], "C18",
-                                    population = pop, covar_set = cov)
-        create_exposure_correlation(mwas_results_list_hilic[[pop]][[cov]], "HILIC",
-                                    population = pop, covar_set = cov)
+study_names |>
+  purrr::walk(function(study) {
+    population_names |>
+      purrr::walk(function(pop) {
+        covar_names |>
+          purrr::walk(function(cov) {
+            create_exposure_correlation(mwas_results_list_c18[[study]][[pop]][[cov]], "C18",
+                                        population = pop, covar_set = cov,
+                                        study = study)
+            create_exposure_correlation(mwas_results_list_hilic[[study]][[pop]][[cov]], "HILIC",
+                                        population = pop, covar_set = cov,
+                                        study = study)
+          })
       })
   })
 
@@ -972,40 +1054,40 @@ create_manhattan <- function(mwas_result, exposure_name,
 }
 
 
-# Create Manhattan plots for key exposures (NOx-related) ---------------------
 
-# Focus on NOx if available
-nox_exposures <- exposure_vars[grepl("nox|no2", exposure_vars, ignore.case = TRUE)]
+# Create Manhattan plots for each exposure --------------------------------
 
-if (length(nox_exposures) > 0) {
-  population_names |>
-    purrr::walk(function(pop) {
-      covar_names |>
-        purrr::walk(function(cov) {
-          purrr::walk(nox_exposures, function(exp) {
-            c("C18", "HILIC") |>
-              purrr::walk(function(col_type) {
-                mwas_list <- if (col_type == "C18") {
-                  mwas_results_list_c18
-                } else {
-                  mwas_results_list_hilic
-                }
-                p <- create_manhattan(
-                  mwas_list[[pop]][[cov]][[exp]],
-                  exposure_name = exp,
-                  column_type = col_type
-                )
-                ggsave(
-                  filename = here::here("figures", "mwas", pop, cov, exp,
-                                        glue::glue("manhattan_{tolower(col_type)}_{exp}.png")),
-                  plot = p,
-                  width = 12, height = 6, dpi = 300
-                )
-              })
+
+study_names |>
+  purrr::walk(function(study) {
+    population_names |>
+      purrr::walk(function(pop) {
+        covar_names |>
+          purrr::walk(function(cov) {
+            purrr::walk(exposure_vars_list[[study]], function(exp) {
+              c("C18", "HILIC") |>
+                purrr::walk(function(col_type) {
+                  mwas_list <- if (col_type == "C18") {
+                    mwas_results_list_c18[[study]]
+                  } else {
+                    mwas_results_list_hilic[[study]]
+                  }
+                  p <- create_manhattan(
+                    mwas_list[[pop]][[cov]][[exp]],
+                    exposure_name = exp,
+                    column_type = col_type
+                  )
+                  ggsave(
+                    filename = here::here("figures", "mwas", study, pop, cov, exp,
+                                          glue::glue("manhattan_{tolower(col_type)}_{exp}.png")),
+                    plot = p,
+                    width = 12, height = 6, dpi = 300
+                  )
+                })
+            })
           })
-        })
-    })
-}
+      })
+  })
 
 
 # =============================================================================
@@ -1095,25 +1177,26 @@ categorize_pathway <- function(pathway_name) {
 
 # Read pathway enrichment results ---------------------------------------------
 
-# Get pathway files only for comp_qgcomp_all and comp_wqs_all
+# Get pathway files only for comp_qgcomp_all, comp_wqs_all, and comp_qgcomp_cox_all
 pathway_files <- list.files(
   here::here("metaboAnalyst", "Output"),
   pattern = "mummichog_pathway_enrichment",
   recursive = TRUE,
   full.names = TRUE
 ) |>
-  # Keep only comp_qgcomp_all and comp_wqs_all folders
-  purrr::keep(~ grepl("comp_qgcomp_all|comp_wqs_all", .x))
+  # Keep only comp_qgcomp_all, comp_wqs_all, and comp_qgcomp_cox_all folders
+  purrr::keep(~ grepl("comp_qgcomp_all|comp_wqs_all|comp_qgcomp_cox_all", .x))
 
 # Function to read and process pathway file
-# Path structure: metaboAnalyst/Output/{population}/{covar_set}/{exposure}/file.csv
+# Path structure: metaboAnalyst/Output/{study}/{population}/{covar_set}/{exposure}/file.csv
 read_pathway_file <- function(file_path) {
-  # Extract population, covar_set, and exposure from path
+  # Extract study, population, covar_set, and exposure from path
   path_parts <- unlist(strsplit(file_path, "/"))
   output_idx <- which(path_parts == "Output")
-  population <- path_parts[output_idx + 1]
-  covar_set <- path_parts[output_idx + 2]
-  exposure <- path_parts[output_idx + 3]
+  study <- path_parts[output_idx + 1]
+  population <- path_parts[output_idx + 2]
+  covar_set <- path_parts[output_idx + 3]
+  exposure <- path_parts[output_idx + 4]
 
   # Read the file
   if (grepl("\\.csv$", file_path)) {
@@ -1168,11 +1251,13 @@ if (length(pathway_files) > 0) {
         exposure_clean = dplyr::case_when(
           exposure == "comp_wqs_all" ~ "Air toxicant composite (WQS)",
           exposure == "comp_qgcomp_all" ~ "Air toxicant composite (QG-computation)",
+          exposure == "comp_qgcomp_cox_all" ~ "Air toxicant composite (QGcomp-Cox)",
           TRUE ~ exposure
         ),
         exposure_short = dplyr::case_when(
           exposure == "comp_wqs_all" ~ "WQS",
           exposure == "comp_qgcomp_all" ~ "QGcomp",
+          exposure == "comp_qgcomp_cox_all" ~ "QGcomp-Cox",
           TRUE ~ exposure
         ),
         population = factor(population, levels = c("all", "no demcind", "demcind"))
@@ -1320,7 +1405,8 @@ if (length(pathway_files) > 0) {
         scale_color_manual(values = pop_pal, name = "Population") +
         scale_shape_manual(
           values = c("Air toxicant composite (WQS)" = 16,
-                     "Air toxicant composite (QG-computation)" = 17),
+                     "Air toxicant composite (QG-computation)" = 17,
+                     "Air toxicant composite (QGcomp-Cox)" = 15),
           name = "Exposure"
         ) +
         ggh4x::facet_grid2(
