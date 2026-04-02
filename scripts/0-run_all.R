@@ -8,7 +8,7 @@
 ##
 ## Date Created: 2026-01-29
 ##
-## Date Modified: 2026-01-29
+## Date Modified: 2026-04-02
 ##
 ## Copyright (c) Yufan Gong, 2026
 ## Email: ivangong@ucla.edu
@@ -19,14 +19,14 @@
 ##        Run this script from the project root directory.
 ##
 ##        Pipeline Overview:
-##        1-functions.R     - Load packages and define helper functions
-##        2-load_data.R     - Load all raw data (exposure, covariates, metabolomics)
-##        3-clean_data.R    - Clean SALSA covariates and air toxicants exposure
-##        4-analyze_data.R  - Initial association analysis (Cox, logistic)
-##        5-get_residuals.R - Generate covariate-adjusted metabolomics residuals
-##        6-mwas_analysis.R - Run MWAS using limma and PLS-DA
-##        7-visualization.R - Create figures (volcano, heatmap, scatter)
-##        8-pathway_analysis.R - Pathway enrichment analysis
+##        1-functions.R       - Load packages and define helper functions
+##        2-load_data.R       - Load all raw data (exposure, covariates, metabolomics)
+##        3-clean_data.R      - Clean and preprocess raw data
+##        4-mwas_analysis.R   - MWAS analysis (limma + PLS with VIP scores)
+##        5-annotation.R      - Annotate metabolic features (Emory inhouse, HMDB)
+##        6-pathway_analysis.R - Pathway analysis (Mummichog via MetaboAnalystR)
+##        7-visualization.R   - Create visualizations (volcano, heatmap, scatter)
+##        8-create_table1.R   - Create Table 1 (demographic characteristics)
 ##
 ## ---------------------------
 
@@ -89,43 +89,42 @@ cat("Data cleaning completed.\n\n")
 
 
 # =============================================================================
-# STEP 4: Initial Association Analysis (Optional)
+# STEP 4: MWAS Analysis
 # =============================================================================
 
 cat("-------------------------------------------------------------\n")
-cat("STEP 4: Running initial association analysis...\n")
+cat("STEP 4: Running MWAS analysis (limma + PLS)...\n")
 cat("-------------------------------------------------------------\n")
 
-# Uncomment to run the initial analysis
-# source(here::here("scripts", "4-analyze_data.R"))
-
-cat("Initial analysis completed (or skipped).\n\n")
-
-
-# =============================================================================
-# STEP 5: Generate Metabolomics Residuals
-# =============================================================================
-
-cat("-------------------------------------------------------------\n")
-cat("STEP 5: Generating covariate-adjusted metabolomics residuals...\n")
-cat("-------------------------------------------------------------\n")
-
-source(here::here("scripts", "5-get_residuals.R"))
-
-cat("Residuals generated successfully.\n\n")
-
-
-# =============================================================================
-# STEP 6: Run MWAS Analysis
-# =============================================================================
-
-cat("-------------------------------------------------------------\n")
-cat("STEP 6: Running MWAS analysis (limma + PLS-DA)...\n")
-cat("-------------------------------------------------------------\n")
-
-source(here::here("scripts", "6-mwas_analysis.R"))
+source(here::here("scripts", "4-mwas_analysis.R"))
 
 cat("MWAS analysis completed.\n\n")
+
+
+# =============================================================================
+# STEP 5: Annotation
+# =============================================================================
+
+cat("-------------------------------------------------------------\n")
+cat("STEP 5: Annotating metabolic features...\n")
+cat("-------------------------------------------------------------\n")
+
+source(here::here("scripts", "5-annotation.R"))
+
+cat("Annotation completed.\n\n")
+
+
+# =============================================================================
+# STEP 6: Pathway Analysis
+# =============================================================================
+
+cat("-------------------------------------------------------------\n")
+cat("STEP 6: Running pathway analysis (Mummichog)...\n")
+cat("-------------------------------------------------------------\n")
+
+source(here::here("scripts", "6-pathway_analysis.R"))
+
+cat("Pathway analysis completed.\n\n")
 
 
 # =============================================================================
@@ -142,16 +141,16 @@ cat("Visualizations created.\n\n")
 
 
 # =============================================================================
-# STEP 8: Pathway Analysis
+# STEP 8: Create Table 1
 # =============================================================================
 
 cat("-------------------------------------------------------------\n")
-cat("STEP 8: Running pathway analysis...\n")
+cat("STEP 8: Creating Table 1 (demographic characteristics)...\n")
 cat("-------------------------------------------------------------\n")
 
-source(here::here("scripts", "8-pathway_analysis.R"))
+source(here::here("scripts", "8-create_table1.R"))
 
-cat("Pathway analysis completed.\n\n")
+cat("Table 1 created.\n\n")
 
 
 # =============================================================================
@@ -175,9 +174,10 @@ cat("  - Pathway results: metaboAnalyst/\n")
 cat("  - Processed data: data/metabolomics/processed/\n")
 cat("\n")
 cat("Key results files:\n")
-cat("  - mwas_summary_table.xlsx\n")
 cat("  - mwas_results_all.RData\n")
-cat("  - pathway_results_all.RData\n")
+cat("  - mwas_annotation.RData\n")
+cat("  - metapone_results_all.RData\n")
+cat("  - Table 1 (demographic characteristics)\n")
 cat("\n")
 
 # Save session info for reproducibility

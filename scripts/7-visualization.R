@@ -18,7 +18,6 @@
 ## Notes: This script creates publication-quality visualizations for
 ##        the air toxicants - metabolomics association study.
 ##
-##        Dependencies: Run scripts 1-6 before this script.
 ## ---------------------------
 
 # Load required packages -----------------------------------------------------

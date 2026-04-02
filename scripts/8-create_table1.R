@@ -18,7 +18,6 @@
 ## Notes: This script creates a descriptive statistics table (Table 1)
 ##        for SALSA participants with metabolomics data.
 ##
-##        Dependencies: Run scripts 1-3 before this script.
 ## ---------------------------
 
 # Load required packages -----------------------------------------------------

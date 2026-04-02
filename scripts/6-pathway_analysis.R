@@ -19,7 +19,6 @@
 ##        1. Mummichog (via MetaboAnalystR)
 ##        2. Creates input files for external pathway tools
 ##
-##        Dependencies: Run scripts 1-6 before this script.
 ## ---------------------------
 
 

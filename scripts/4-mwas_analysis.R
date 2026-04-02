@@ -19,8 +19,6 @@
 ##        1. limma for linear model fitting with empirical Bayes
 ##        2. PLS with VIP scores for feature selection
 ##
-##        Dependencies: Run scripts 1-4 before this script.
-##        Key input: Residualized metabolomics data from script 4
 ## ---------------------------
 
 # Load required packages -----------------------------------------------------

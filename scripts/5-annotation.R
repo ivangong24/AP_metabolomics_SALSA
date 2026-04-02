@@ -18,7 +18,6 @@
 ##       1. Emory Inhouse library
 ##       2. HMDB
 ##
-##       Dependencies: Run scripts 1-5 before this script.
 ## ---------------------------
 
 # Load required packages -----------------------------------------------------
