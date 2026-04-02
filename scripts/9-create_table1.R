@@ -88,7 +88,8 @@ message(paste0("\nFinal sample size for Table 1: ", nrow(table1_data)))
 tbl1_overall <- table1_data |>
   dplyr::select(
     # Demographics
-    blage, gender, edu_year, mh62, alcohol_drinking, pa3_met_if_ca, nses,
+    blage, gender, edu_year, mh62, alcohol_drinking, 
+    pa3_met_if_ca, ruca_metro, nses,
     # Health outcomes
     demcind
   ) |> 

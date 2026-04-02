@@ -14,7 +14,15 @@
 ##
 ## ---------------------------
 
-# clean the original salsa data -------------------------------------------
+# Load required packages -----------------------------------------------------
+
+source(here::here("scripts", "1-functions.R"))
+
+# Load raw data --------------------------------------------------------------
+
+source(here::here("scripts", "2-load_data.R"))
+
+# clean the original salsa data ----------------------------------------------
 {
   salsa_clean_total <- salsa_data_04212016 |> 
     dplyr::left_join(pa_nses_08042023, by = "rand_id") |>
@@ -489,10 +497,12 @@ pheatmap::pheatmap(
 
 covar_list <- list(
   covar = quote_all(age_at_blooddraw, gender, edu_year, mh62, 
+                    ruca_metro, nses,
                     wave, batch, demcind),
   
-  covar_sen = quote_all(age_at_blooddraw, gender, edu_year, mh62,
-                        alcohol_drinking, pa3_met_if_ca, nses, 
+  covar_sen = quote_all(age_at_blooddraw, gender, edu_year, mh62, 
+                        ruca_metro, nses,
+                        alcohol_drinking, pa3_met_if_ca,  
                         bmi_at_blooddraw, diab_at_blooddraw, 
                         wave, batch, demcind)
   

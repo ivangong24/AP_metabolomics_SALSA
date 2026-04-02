@@ -53,10 +53,12 @@ combined_data_list_new <- combined_data_list_new |>
 
 covar_list <- list(
   covar = quote_all(age_at_blooddraw, gender, edu_year, mh62, 
+                    ruca_metro, nses,
                     wave, batch, demcind),
   
-  covar_sen = quote_all(age_at_blooddraw, gender, edu_year, mh62,
-                        alcohol_drinking, pa3_met_if_ca, nses, 
+  covar_sen = quote_all(age_at_blooddraw, gender, edu_year, mh62, 
+                        ruca_metro, nses,
+                        alcohol_drinking, pa3_met_if_ca,  
                         bmi_at_blooddraw, diab_at_blooddraw, 
                         wave, batch, demcind)
   
