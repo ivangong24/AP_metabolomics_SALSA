@@ -129,7 +129,7 @@ if (file.exists(table1_file)) {
   # If not, load raw data and create tables
   load(here::here("data", "processed", "salsa_clean.RData"))
   load(here::here("data", "processed", "air_toxicants_exposure.RData"))
-  load(here::here("data", "links", "processed", "Sample_links.RData"))
+  load(here::here("data", "processed", "sample_links.RData"))
 
   # Get participants with metabolomics data
   participants_c18 <- sample_link_c18 |> pull(rand_id) |> unique()
@@ -172,7 +172,7 @@ if (exists("tbl1_by_demcind")) {
     missing = "ifany",
     missing_text = "Missing"
     ) |>
-      gtsummary::add_overall() |>
+    gtsummary::add_overall() |>
     gtsummary::modify_header(label = "**Characteristic**") |>
     gtsummary::modify_spanning_header(c("stat_1", "stat_2") ~ "**Dementia/CIND Status**") |>
     gtsummary::modify_caption("**Table 1. Characteristics by dementia/CIND status (N = {N})**") |>
