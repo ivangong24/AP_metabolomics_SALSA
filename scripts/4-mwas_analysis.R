@@ -1,6 +1,6 @@
 ## ---------------------------
 ##
-## Script name: 6-mwas_analysis.R
+## Script name: 4-mwas_analysis.R
 ## Purpose of script: To perform Metabolome-Wide Association Study (MWAS)
 ##                    for air toxicants and metabolomic profiles in SALSA
 ##
@@ -8,7 +8,7 @@
 ##
 ## Date Created: 2026-01-29
 ##
-## Date Modified: 2026-01-29
+## Date Modified: 2026-04-01
 ##
 ## Copyright (c) Yufan Gong, 2026
 ## Email: ivangong@ucla.edu

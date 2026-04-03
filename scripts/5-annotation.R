@@ -1,6 +1,6 @@
 ## ---------------------------
 ##
-## Script name: 6-annotation.R
+## Script name: 5-annotation.R
 ## Purpose of script: To annotate metabolic features
 ##
 ## Author: Yufan Gong

@@ -1,6 +1,6 @@
 ## ---------------------------
 ##
-## Script name: 9-create_table1.R
+## Script name: 8-create_table1.R
 ## Purpose of script: To create Table 1 (demographic characteristics) for
 ##                    participants with metabolomics data
 ##
@@ -8,7 +8,7 @@
 ##
 ## Date Created: 2026-02-03
 ##
-## Date Modified: 2026-02-03
+## Date Modified: 2026-04-02
 ##
 ## Copyright (c) Yufan Gong, 2026
 ## Email: ivangong@ucla.edu

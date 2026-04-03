@@ -1,6 +1,6 @@
 ## ---------------------------
 ##
-## Script name: 7-pathway_analysis.R
+## Script name: 6-pathway_analysis.R
 ## Purpose of script: To perform pathway analysis using Mummichog
 ##                    for significant metabolites from MWAS
 ##
@@ -8,7 +8,7 @@
 ##
 ## Date Created: 2026-01-29
 ##
-## Date Modified: 2026-01-29
+## Date Modified: 2026-04-01
 ##
 ## Copyright (c) Yufan Gong, 2026
 ## Email: ivangong@ucla.edu
