@@ -856,114 +856,206 @@ list(qgcomp_cox_model_weight_all, qgcomp_cox_model_weight_traffic,
 
 
 # PCA MIXTURE MODELS FOR AIR TOXICANTS ---------------------------------
+#
+# Note: PCA finds the direction of maximum *variance* in the exposure data,
+# whereas WQS/QGcomp find the direction most predictive of *dementia/CIND*.
+# These are fundamentally different objectives, so moderate-to-low correlation
+# between PCA-PC1 and the outcome-driven composites is expected unless the
+# highest-variance exposure pattern happens to coincide with the most
+# disease-relevant one.
+#
+# To make the PCA composite as comparable as possible to WQS/QGcomp, we apply
+# PCA to the same quartile-scored (0-3) exposure matrix that those methods use.
 
-# pca_fit_list <- combined_data_list %>%
-#   purrr::map(function(dflist){
-#     dflist |>
-#       purrr::map(function(data){
-#         data |>
-#           dplyr::select(all_of(exp_vars)) |>
-#           dplyr::mutate(
-#             across(all_of(exp_vars),
-#                    ~ as.numeric(.x) / quantile(.x, probs = seq(0, 1, by = 0.25),
-#                                                na.rm = TRUE)[2])
-#           ) |> 
-#           scale() |> 
-#           prcomp(center = FALSE, scale. = FALSE)
-#       })
-#   })
-# 
-# summary(pca_fit_list[[1]][[1]])$importance[2, 1]
-# plot(pca_fit_list[[1]][[1]], type = "l", main = "Scree Plot")
-# 
-# test <- pca_fit_list[[1]][[1]]$x[, 1] |>
-#   as.data.frame()
-# 
-# dat <- combined_data_list[["total"]][["all"]] |> 
-#   dplyr::select(all_of(exp_vars)) |> 
-#   dplyr::mutate(
-#     across(all_of(exp_vars),
-#            ~ as.numeric(.x) / quantile(.x, probs = seq(0, 1, by = 0.25),
-#                                        na.rm = TRUE)[2])
-#   ) 
-# sapply(dat[exp_vars], class)
-# sapply(dat[exp_vars], \(x) sd(x, na.rm=TRUE))
-# sapply(dat[exp_vars], \(x) hist(x))
-# 
-# summary(as.vector(cor(dat, use="pairwise.complete.obs")))
-# nrow(dat |> na.omit())
+pca_composite_list <- list(
+  all     = exp_vars,
+  traffic = exp_vars_traffic,
+  metal   = exp_vars_metal
+) |>
+  purrr::map(function(exp_list) {
+    # use the same combined dataset as WQS/QGcomp
+    dat <- combined_data_list[["total"]][["all"]][["covar"]] |>
+      dplyr::select(rand_id, blood_date, all_of(exp_list)) |>
+      tidyr::drop_na()
 
+    # quartile-score each pollutant to match WQS/QGcomp input (0, 1, 2, 3)
+    dat_q <- dat |>
+      dplyr::mutate(
+        across(all_of(exp_list),
+               ~ as.integer(cut(.x,
+                                breaks = quantile(.x, probs = 0:4 / 4, na.rm = TRUE),
+                                include.lowest = TRUE, labels = FALSE)) - 1L)
+      )
 
+    # run PCA on the quartile-scored matrix (center + scale within prcomp)
+    pca_fit <- prcomp(dat_q[exp_list], center = TRUE, scale. = TRUE)
+
+    # proportion of variance explained by PC1
+    pve <- summary(pca_fit)$importance[2, 1]
+    message("PCA on ", length(exp_list), " pollutants: PC1 explains ",
+            round(pve * 100, 1), "% of variance")
+
+    # PC1 loadings — flip sign so that the majority of loadings are positive
+    # (ensures higher score = higher overall exposure, matching WQS convention)
+    loadings_pc1 <- pca_fit$rotation[, 1]
+    if (sum(loadings_pc1 < 0) > sum(loadings_pc1 > 0)) {
+      pca_fit$x[, 1] <- -pca_fit$x[, 1]
+      loadings_pc1   <- -loadings_pc1
+      message("  -> PC1 sign flipped so majority of loadings are positive")
+    }
+    message("  PC1 loadings: ",
+            paste(names(loadings_pc1), round(loadings_pc1, 3),
+                  sep = "=", collapse = ", "))
+
+    # participant-level PC1 score
+    comp_tbl <- dat |>
+      dplyr::select(rand_id, blood_date) |>
+      dplyr::mutate(comp_pca = as.numeric(pca_fit$x[, 1]))
+
+    list(pca_fit = pca_fit, composites = comp_tbl,
+         loadings = loadings_pc1, pve = pve)
+  })
+
+# Compare PCA composites with WQS and QGcomp composites
+message("\n--- Correlation between PCA-PC1 and WQS/QGcomp composites ---")
+purrr::iwalk(pca_composite_list, function(pca_obj, group_name) {
+  comp <- pca_obj$composites |>
+    dplyr::left_join(wqs_df_list[["covar"]], by = c("rand_id", "blood_date")) |>
+    dplyr::left_join(qgcomp_df_list[["covar"]], by = c("rand_id", "blood_date"))
+
+  wqs_col    <- paste0("comp_wqs_", group_name)
+  qgcomp_col <- paste0("comp_qgcomp_", group_name)
+
+  if (wqs_col %in% names(comp)) {
+    r_wqs <- cor(comp$comp_pca, comp[[wqs_col]], use = "complete.obs")
+    message(group_name, ": PCA vs WQS r = ", round(r_wqs, 3))
+  }
+  if (qgcomp_col %in% names(comp)) {
+    r_qg <- cor(comp$comp_pca, comp[[qgcomp_col]], use = "complete.obs")
+    message(group_name, ": PCA vs QGcomp r = ", round(r_qg, 3))
+  }
+})
+
+# --- Scatter plot matrix: PCA vs WQS vs QGcomp for each mixture grouping ---
+
+scatter_plot_list <- purrr::imap(pca_composite_list, function(pca_obj, group_name) {
+
+  wqs_col    <- paste0("comp_wqs_", group_name)
+  qgcomp_col <- paste0("comp_qgcomp_", group_name)
+
+  comp <- pca_obj$composites |>
+    dplyr::left_join(wqs_df_list[["covar"]], by = c("rand_id", "blood_date")) |>
+    dplyr::left_join(qgcomp_df_list[["covar"]], by = c("rand_id", "blood_date")) |>
+    dplyr::select(PCA = comp_pca,
+                  WQS = dplyr::all_of(wqs_col),
+                  QGcomp = dplyr::all_of(qgcomp_col)) |>
+    tidyr::drop_na()
+
+  # all pairwise combinations
+  pairs <- list(
+    c("WQS",    "QGcomp"),
+    c("PCA",    "WQS"),
+    c("PCA",    "QGcomp")
+  )
+
+  panels <- purrr::map(pairs, function(p) {
+    r <- cor(comp[[p[1]]], comp[[p[2]]])
+    ggplot(comp, aes(x = .data[[p[1]]], y = .data[[p[2]]])) +
+      geom_point(alpha = 0.25, size = 0.8, color = "steelblue") +
+      geom_smooth(method = "lm", se = FALSE, color = "firebrick", linewidth = 0.7) +
+      annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 1.3,
+               label = paste0("r = ", round(r, 3)),
+               size = 3.5, fontface = "bold") +
+      labs(x = p[1], y = p[2]) +
+      theme_bw(base_size = 10)
+  })
+
+  patchwork::wrap_plots(panels, nrow = 1) +
+    patchwork::plot_annotation(
+      title = paste0("Composite index correlations — ",
+                     tools::toTitleCase(group_name), " mixture"),
+      theme = theme(plot.title = element_text(size = 12, face = "bold"))
+    )
+})
+
+# display all three groupings stacked
+composite_corr_plot <- patchwork::wrap_plots(scatter_plot_list, ncol = 1)
+print(composite_corr_plot)
+
+ggsave(here::here("figures", "composite_index_correlations.png"),
+       composite_corr_plot,
+       width = 10, height = 9, dpi = 300, bg = "white")
+
+# Prepare PCA composite df_list in the same structure as wqs_df_list /
+# qgcomp_df_list (list keyed by covariate set). PCA is unsupervised so the
+# same scores apply to every covariate set — replicate across sets.
+pca_df <- pca_composite_list |>
+  purrr::map(~ .x$composites |>
+               dplyr::select(rand_id, blood_date, comp_pca)) |>
+  purrr::reduce(dplyr::left_join, by = c("rand_id", "blood_date")) |>
+  dplyr::rename(comp_pca_all     = comp_pca.x,
+                comp_pca_traffic = comp_pca.y,
+                comp_pca_metal   = comp_pca)
+
+# replicate across covariate sets to match the structure of wqs_df_list
+covar_set_names <- names(wqs_df_list)
+pca_df_list <- purrr::set_names(
+  purrr::map(covar_set_names, ~ pca_df),
+  covar_set_names
+)
 
 
 # Merge the composite exposure back ---------------------------------------
 
-# list(air_toxicants_avg_list,
-#      pca_fit_list) |>
-#   purrr::pmap(function(exp_list, pca_list){
-#     list(exp_list, pca_list) |>
-#       purrr::pmap(function(exp_data, pca_fit){
-#         exp_data |>
-#           dplyr::mutate(
-#             across(all_of(exp_vars),
-#                    ~ as.numeric(.x) / quantile(.x, probs = seq(0, 1, by = 0.25),
-#                                                na.rm = TRUE)[2],
-#                                .names = "{.col}_quant")) |>
-#           dplyr::left_join(wqs_df, 
-#                            by = c("rand_id", "blood_date")) |>
-#           dplyr::mutate(comp_pca = pca_fit$x[, 1])
-#       })
-#   }) -> air_toxicants_avg_list_new
-
-# merge the WQS and QGCOMP composite indices back to the combined dataset for 
-# later use in MWAS
-combined_data_list |> 
+# merge the WQS, QGCOMP, and PCA composite indices back to the combined
+# dataset for later use in MWAS
+combined_data_list |>
   purrr::map(function(dflist){
-    dflist |> 
+    dflist |>
       purrr::map(function(datalist){
-        list(datalist, wqs_df_list, qgcomp_df_list, qgcomp_cox_df_list) |> 
-          purrr::pmap(function(data, wqs_df, qgcomp_df, qgcomp_cox_df){
-            data |> 
+        list(datalist, wqs_df_list, qgcomp_df_list,
+             qgcomp_cox_df_list, pca_df_list) |>
+          purrr::pmap(function(data, wqs_df, qgcomp_df,
+                               qgcomp_cox_df, pca_df){
+            data |>
               dplyr::mutate(
                 across(all_of(exp_vars),
                        ~ as.numeric(.x) / IQR(.x, na.rm = TRUE),
                        .names = "{.col}_iqr")) |>
-              dplyr::left_join(wqs_df, 
-                               by = c("rand_id", "blood_date")) |> 
-              dplyr::left_join(qgcomp_df, 
-                               by = c("rand_id", "blood_date")) |> 
+              dplyr::left_join(wqs_df,
+                               by = c("rand_id", "blood_date")) |>
+              dplyr::left_join(qgcomp_df,
+                               by = c("rand_id", "blood_date")) |>
               dplyr::left_join(qgcomp_cox_df,
+                               by = c("rand_id", "blood_date")) |>
+              dplyr::left_join(pca_df,
                                by = c("rand_id", "blood_date"))
           })
       })
   }) -> combined_data_list_new
 
-# merge the WQS and QGCOMP composite indices back to the air toxicant exposure 
-# dataset for future loading
-air_toxicants_avg_list |> 
+# merge the WQS, QGCOMP, and PCA composite indices back to the air toxicant
+# exposure dataset for future loading
+air_toxicants_avg_list |>
   map(function(dflist){
-    dflist |> 
+    dflist |>
       map(function(data){
-         list(wqs_df_list, qgcomp_df_list, qgcomp_cox_df_list) |> 
-          purrr::pmap(function(wqs_df, qgcomp_df, qgcomp_cox_df){
-            data |> 
+         list(wqs_df_list, qgcomp_df_list,
+              qgcomp_cox_df_list, pca_df_list) |>
+          purrr::pmap(function(wqs_df, qgcomp_df,
+                               qgcomp_cox_df, pca_df){
+            data |>
               dplyr::mutate(
                 across(all_of(exp_vars),
                        ~ as.numeric(.x) / IQR(.x, na.rm = TRUE),
                        .names = "{.col}_iqr")) |>
-              # create unsupervised equal weight quantile-based index
-              # dplyr::mutate(comp_equal_all = rowMeans(across(ends_with("_quant")), 
-              #                                         na.rm = TRUE),
-              #               comp_equal_traffic = rowMeans(across(
-              #                 ends_with("_quant") & 
-              #                   !matches("nickel|chromium|lead")), 
-              #                 na.rm = TRUE
-              #               )) |>
-              dplyr::left_join(wqs_df, 
-                               by = c("rand_id", "blood_date")) |> 
-              dplyr::left_join(qgcomp_df, 
-                               by = c("rand_id", "blood_date")) |> 
+              dplyr::left_join(wqs_df,
+                               by = c("rand_id", "blood_date")) |>
+              dplyr::left_join(qgcomp_df,
+                               by = c("rand_id", "blood_date")) |>
               dplyr::left_join(qgcomp_cox_df,
+                               by = c("rand_id", "blood_date")) |>
+              dplyr::left_join(pca_df,
                                by = c("rand_id", "blood_date"))
           })
       })
@@ -988,7 +1080,7 @@ test_combined_data |>
   })
 
 # check the correlation between the composite indices and visualize with a heatmap
-tbl_composite_cor <- air_toxicants_avg_list_new[["total"]][["all"]][["covar"]] %>% 
+tbl_composite_cor <- air_toxicants_avg_list_new[["total"]][["all"]][["covar"]] %>%
   select(starts_with("comp")) %>%
   rename(`Air toxicant composite (QGCOMP all)` = comp_qgcomp_all,
          `Air toxicant composite (QGCOMP traffic-related)` = comp_qgcomp_traffic,
@@ -998,7 +1090,10 @@ tbl_composite_cor <- air_toxicants_avg_list_new[["total"]][["all"]][["covar"]] %
          `Air toxicant composite (QGCOMP cox metal)` = comp_qgcomp_cox_metal,
          `Air toxicant composite (WQS all)` = comp_wqs_all,
          `Air toxicant composite (WQS traffic-related)` = comp_wqs_traffic,
-         `Air toxicant composite (WQS metal)` = comp_wqs_metal) %>% 
+         `Air toxicant composite (WQS metal)` = comp_wqs_metal,
+         `Air toxicant composite (PCA all)` = comp_pca_all,
+         `Air toxicant composite (PCA traffic-related)` = comp_pca_traffic,
+         `Air toxicant composite (PCA metal)` = comp_pca_metal) %>%
   cor(use = "pairwise.complete.obs") %>% 
   as_tibble(rownames = 'var_x') |> 
   pivot_longer(
