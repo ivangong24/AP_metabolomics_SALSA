@@ -280,6 +280,7 @@ system.time({
 save(dupcor_c18_list, dupcor_hilic_list,
      file = here::here("data", "processed", 
                        "duplicate_correlation_results.RData"))
+# load(here::here("data", "processed", "duplicate_correlation_results.RData"))
 # Fit limma models -----------------------------------------------------------
 
 ## Function to fit limma model with duplicate correlation
@@ -465,12 +466,26 @@ list(
 
 # Fit PLS models for each exposure -------------------------------------------
 
-## Function to fit PLS and extract VIP
-fit_pls_vip <- function(X, Y, ncomp = 3) {
+## Function to fit PLS and extract VIP (with covariate adjustment)
+fit_pls_vip <- function(X, Y, covars_df = NULL, ncomp = 3) {
   # Remove NA values
-  valid_idx <- !is.na(Y)
+  valid_idx <- complete.cases(Y, covars_df)
   X_valid <- X[valid_idx, ]
   Y_valid <- Y[valid_idx]
+
+  # Residualize X and Y on covariates to adjust for confounders
+  if (!is.null(covars_df)) {
+    covars_valid <- covars_df[valid_idx, , drop = FALSE]
+    covar_matrix <- model.matrix(~ ., data = covars_valid)
+
+    # Residualize Y
+    Y_valid <- residuals(lm.fit(covar_matrix, Y_valid))
+
+    # Residualize each column of X
+    X_valid <- apply(X_valid, 2, function(x) {
+      residuals(lm.fit(covar_matrix, x))
+    })
+  }
 
   # Fit PLS
   pls_fit <- mixOmics::pls(X_valid, Y_valid, ncomp = ncomp)
@@ -514,47 +529,124 @@ list(
 
 mem.maxVSize(vsize = 65536)
 
-list(
-  list("C18", "HILIC"),
-  list(combined_data_list_c18, combined_data_list_hilic),
-  list(metabo_matrix_list_c18, metabo_matrix_list_hilic)
+# # Original combined PLS block (commented out due to memory constraints)
+# list(
+#   list("C18", "HILIC"),
+#   list(combined_data_list_c18, combined_data_list_hilic),
+#   list(metabo_matrix_list_c18, metabo_matrix_list_hilic)
+# ) |>
+#   purrr::pmap(function(mode, combined_data_list, metabo_data_list){
+#     list(combined_data_list, metabo_data_list,
+#          exposure_vars_list, names(exposure_vars_list)) |>
+#       purrr::pmap(function(combined_df_list, metabo_list,
+#                            exposure_vars, study){
+#         list(combined_df_list, metabo_list, names(combined_df_list)) |>
+#           purrr::pmap(function(combined_dflist, metabo_matrix, population){
+#             list(combined_dflist, covars_list_new, names(covars_list_new)) |>
+#               purrr::pmap(function(combined_data, covars, covar_name){
+#                 message(paste0("Run PLS in ", mode,
+#                                " for ", study, "_", population,
+#                                " with covariates set: ",
+#                                covar_name, " ..."))
+#                 covars_df <- combined_data |>
+#                   dplyr::select(all_of(covars))
+#                 exposure_vars |>
+#                   purrr::set_names() |>
+#                   purrr::map(function(exp_var) {
+#                     fit_pls_vip(
+#                       X = metabo_matrix,
+#                       Y = combined_data[[exp_var]],
+#                       covars_df = covars_df,
+#                       ncomp = 3
+#                     )
+#                   })
+#               })
+#           })
+#       })
+#   }) |>
+#   purrr::set_names("pls_results_list_c18", "pls_results_list_hilic") |>
+#   list2env(.GlobalEnv)
+
+## Run PLS separately for C18 and HILIC to reduce peak memory usage ----------
+
+# --- Part 1: C18 ---
+message("=== Running PLS for C18 ===")
+
+pls_results_list_c18 <- list(
+  combined_data_list_c18, metabo_matrix_list_c18,
+  exposure_vars_list, names(exposure_vars_list)
 ) |>
-  purrr::pmap(function(mode, combined_data_list, metabo_data_list){
-    list(combined_data_list, metabo_data_list, 
-         exposure_vars_list, names(exposure_vars_list)) |> 
-      purrr::pmap(function(combined_df_list, metabo_list, 
-                           exposure_vars, study){
-        list(combined_df_list, metabo_list, names(combined_df_list)) |> 
-          purrr::pmap(function(combined_dflist, metabo_matrix, population){
-            combined_dflist |> 
-              purrr::imap(function(combined_data, covar_name){
-                message(paste0("Run PLS in ", mode, 
-                               " for ", study, "_", population, 
-                               " with covariates set: ", 
-                               covar_name, " ..."))
-                exposure_vars |>
-                  purrr::set_names() |>
-                  purrr::map(function(exp_var) {
-                    fit_pls_vip(
-                      X = metabo_matrix,
-                      Y = combined_data[[exp_var]],
-                      ncomp = 3
-                    )
-                  })
+  purrr::pmap(function(combined_df_list, metabo_list,
+                       exposure_vars, study) {
+    list(combined_df_list, metabo_list, names(combined_df_list)) |>
+      purrr::pmap(function(combined_dflist, metabo_matrix, population) {
+        list(combined_dflist, covars_list_new, names(covars_list_new)) |>
+          purrr::pmap(function(combined_data, covars, covar_name) {
+            message(paste0("Run PLS in C18 for ", study, "_", population,
+                           " with covariates set: ", covar_name, " ..."))
+            covars_df <- combined_data |>
+              dplyr::select(all_of(covars))
+            exposure_vars |>
+              purrr::set_names() |>
+              purrr::map(function(exp_var) {
+                fit_pls_vip(
+                  X = metabo_matrix,
+                  Y = combined_data[[exp_var]],
+                  covars_df = covars_df,
+                  ncomp = 3
+                )
               })
           })
       })
-  }) |>
-  purrr::set_names("pls_results_list_c18", "pls_results_list_hilic") |>
-  list2env(.GlobalEnv)
+  })
 
-save(pls_results_list_c18, 
-     file = here::here("data", "metabolomics", 
+save(pls_results_list_c18,
+     file = here::here("data", "metabolomics",
                        "results", "pls_results_c18.RData"))
+
+# Free C18 results from memory before running HILIC
+rm(pls_results_list_c18, metabo_matrix_list_c18)
+gc()
+
+# --- Part 2: HILIC ---
+message("=== Running PLS for HILIC ===")
+
+pls_results_list_hilic <- list(
+  combined_data_list_hilic, metabo_matrix_list_hilic,
+  exposure_vars_list, names(exposure_vars_list)
+) |>
+  purrr::pmap(function(combined_df_list, metabo_list,
+                       exposure_vars, study) {
+    list(combined_df_list, metabo_list, names(combined_df_list)) |>
+      purrr::pmap(function(combined_dflist, metabo_matrix, population) {
+        list(combined_dflist, covars_list_new, names(covars_list_new)) |>
+          purrr::pmap(function(combined_data, covars, covar_name) {
+            message(paste0("Run PLS in HILIC for ", study, "_", population,
+                           " with covariates set: ", covar_name, " ..."))
+            covars_df <- combined_data |>
+              dplyr::select(all_of(covars))
+            exposure_vars |>
+              purrr::set_names() |>
+              purrr::map(function(exp_var) {
+                fit_pls_vip(
+                  X = metabo_matrix,
+                  Y = combined_data[[exp_var]],
+                  covars_df = covars_df,
+                  ncomp = 3
+                )
+              })
+          })
+      })
+  })
+
 save(pls_results_list_hilic,
-     file = here::here("data", "metabolomics", 
+     file = here::here("data", "metabolomics",
                        "results", "pls_results_hilic.RData"))
 
+rm(pls_results_list_hilic, metabo_matrix_list_hilic)
+gc()
+# load(here::here("data", "metabolomics", "results", "pls_results_c18.RData"))
+# load(here::here("data", "metabolomics", "results", "pls_results_hilic.RData"))
 # Extract VIP scores ---------------------------------------------------------
 
 list(
@@ -581,7 +673,10 @@ list(
   set_names("vip_c18_list", "vip_hilic_list") |> 
   list2env(.GlobalEnv)
 
-
+save(vip_c18_list, file = here::here("data", "metabolomics", 
+                                     "results", "vip_c18_list.RData"))
+save(vip_hilic_list, file = here::here("data", "metabolomics", 
+                                       "results", "vip_hilic_list.RData"))
 
 # Identify high-VIP metabolites ----------------------------------------------
 
@@ -615,10 +710,11 @@ print(vip_c18_list |>
 message("\nHILIC VIP > 2 Summary:")
 print(vip_hilic_list |>
         purrr::map(function(vip_data_list){
-          purrr::map(function(vip_list){
-            vip_list |> 
-              purrr::map(~count_high_vip(.x, threshold = 2))
-          })
+          vip_data_list |> 
+            purrr::map(function(vip_list){
+              vip_list |> 
+                purrr::map(~count_high_vip(.x, threshold = 2))
+            })
         })
 )
 
