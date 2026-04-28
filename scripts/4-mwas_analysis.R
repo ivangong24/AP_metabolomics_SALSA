@@ -37,6 +37,10 @@ load(here::here("data", "processed", "combined_data_list_new.RData"))
 
 # Prepare exposure data for MWAS ---------------------------------------------
 
+exp_toexclude_total <- quote_all(cox)
+exp_toexclude_cox <- quote_all(exp, wqs, qgcomp_all, qgcomp_traffic, 
+                               qgcomp_metal, comp_pca)
+
 # clean up the combined datalist
 combined_data_list_new <- combined_data_list_new |> 
   purrr::imap(function(datalist, study){
@@ -46,10 +50,14 @@ combined_data_list_new <- combined_data_list_new |>
           purrr::imap(function(data, covar_name){
             if (study == "total") {
               data |> 
-                dplyr::select(-matches("cox"))
+                dplyr::select(
+                  -matches(str_c(exp_toexclude_total, collapse = "|"))
+                  )
             } else {
               data |> 
-                dplyr::select(-matches("exp|wqs|qgcomp_all|qgcomp_traffic|qgcomp_metal"))
+                dplyr::select(
+                  -matches(str_c(exp_toexclude_cox, collapse = "|"))
+                  )
             }
           })
       })
@@ -231,11 +239,19 @@ list(
 ## Set up parallel backend
 n_workers <- max(1, future::availableCores() - 1)
 message(paste0("Setting up parallel plan with ", n_workers, " workers..."))
-future::plan(future::multisession, workers = n_workers)
 
-## WARNING! This step could take a very long time (could run for several days) ... 
+## Use multicore (fork-based) instead of multisession to avoid serializing
+## the large metabolome matrices to each worker process. Fork-based parallelism
+## shares parent memory via copy-on-write, which is much faster for large objects.
+## NOTE: multicore requires running from terminal, not RStudio.
+future::plan(future::multicore, workers = n_workers)
+
+## WARNING! This step could take a very long time (could run for several days) ...
 
 ## Estimate duplicate correlation for each exposure and population
+## OPTIMIZATION: All jobs per mode are collected into a flat list via pmap,
+## then run in a single future_map call so workers stay busy continuously,
+## instead of many sequential future_map calls with idle gaps between groups.
 system.time({
   list(
     list("C18", "HILIC"),
@@ -243,35 +259,58 @@ system.time({
     list(design_c18_list, design_hilic_list),
     list(combined_data_list_c18, combined_data_list_hilic)
   ) |>
-    purrr::pmap(function(mode, metabo_data_list, design_data_list, 
+    purrr::pmap(function(mode, metabo_data_list, design_data_list,
                          combined_data_list) {
-      list(design_data_list, metabo_data_list, 
-           combined_data_list, names(combined_data_list)) |> 
-        purrr::pmap(function(design_list, metabo_list, 
-                             combined_df_list, study){
-          list(design_list, metabo_list, 
+
+      ## Collect all jobs as a flat list using nested pmap
+      jobs <- list(design_data_list, metabo_data_list,
+                   combined_data_list, names(combined_data_list)) |>
+        purrr::pmap(function(design_list, metabo_list,
+                             combined_df_list, study) {
+          list(design_list, metabo_list,
                combined_df_list, names(combined_df_list)) |>
-            purrr::pmap(function(design_ls, metabo, 
-                                 combined_dflist, population){
-              list(design_ls, combined_dflist, names(combined_dflist)) |> 
-                purrr::pmap(function(designls, combined_data, covar_name){
-                  message(paste0("Calculating duplicate correlation for ", mode, 
-                                 " in ", study, "_", population, 
-                                 " with covariates set: ", covar_name, " ..."))
-                  
-                  block <- combined_data$rand_id
-                  stopifnot(
-                    length(block) == ncol(metabo),
-                    all(combined_data$file.name_new == colnames(metabo)))
-                  
+            purrr::pmap(function(design_ls, metabo,
+                                 combined_dflist, population) {
+              block <- combined_dflist[[1]]$rand_id
+              stopifnot(
+                length(block) == ncol(metabo),
+                all(combined_dflist[[1]]$file.name_new == colnames(metabo)))
+
+              list(design_ls, combined_dflist, names(combined_dflist)) |>
+                purrr::pmap(function(designls, combined_data, covar_name) {
                   designls |>
-                    furrr::future_map(function(design) {
-                      limma::duplicateCorrelation(metabo, design, block = block)
-                    }, .options = furrr_options(seed = TRUE), .progress = TRUE)
-                  
+                    purrr::imap(function(design, exp_name) {
+                      list(study = study, population = population,
+                           covar_name = covar_name, exp_name = exp_name,
+                           design = design, metabo = metabo,
+                           block = combined_data$rand_id)
+                    })
                 })
             })
-        })
+        }) |>
+        purrr::list_flatten() |>
+        purrr::list_flatten() |>
+        purrr::list_flatten()
+
+      message(paste0("Running ", length(jobs),
+                     " duplicateCorrelation jobs for ", mode, " ..."))
+
+      ## Run all jobs in a single future_map call
+      results <- furrr::future_map(jobs, function(job) {
+        limma::duplicateCorrelation(job$metabo, job$design, block = job$block)
+      }, .options = furrr_options(seed = TRUE), .progress = TRUE)
+
+      ## Reconstruct nested list structure (study > population > covar > exposure)
+      purrr::imap(results, function(res, i) {
+        j <- jobs[[i]]
+        list(study = j$study, population = j$population,
+             covar_name = j$covar_name, exp_name = j$exp_name,
+             result = res)
+      }) |>
+        purrr::reduce(function(acc, x) {
+          acc[[x$study]][[x$population]][[x$covar_name]][[x$exp_name]] <- x$result
+          acc
+        }, .init = list())
     }) |>
     purrr::set_names("dupcor_c18_list", "dupcor_hilic_list") |>
     list2env(.GlobalEnv)
@@ -291,45 +330,44 @@ fit_limma <- function(metabolome_matrix, design_matrix, block, correlation) {
   return(fit)
 }
 
-future::plan(future::multisession, workers = n_workers)
+future::plan(future::multicore, workers = n_workers)
 
 system.time({
   list(
     list("C18", "HILIC"),
     list(design_c18_list, design_hilic_list),
     list(metabo_list_c18_final, metabo_list_hilic_final),
-    # list(dupcor_c18, dupcor_hilic),
     list(dupcor_c18_list, dupcor_hilic_list),
     list(combined_data_list_c18, combined_data_list_hilic)
   ) |>
     purrr::pmap(function(mode, design_data_list, metabo_data_list,
                          dupcor_data_list, combined_data_list) {
-      list(design_data_list, metabo_data_list, 
-           dupcor_data_list, combined_data_list, names(combined_data_list)) |> 
-        purrr::pmap(function(design_list, metabo_list, dupcor_list, 
+      list(design_data_list, metabo_data_list,
+           dupcor_data_list, combined_data_list, names(combined_data_list)) |>
+        purrr::pmap(function(design_list, metabo_list, dupcor_list,
                              combined_df_list, study){
           list(design_list, metabo_list, dupcor_list,
-               combined_df_list, names(combined_df_list)) |> 
-            purrr::pmap(function(design_ls, metabo, dupcor_ls, 
+               combined_df_list, names(combined_df_list)) |>
+            purrr::pmap(function(design_ls, metabo, dupcor_ls,
                                  combined_dflist, population){
-              list(design_ls, dupcor_ls, combined_dflist, 
-                   names(combined_dflist)) |> 
-                purrr::pmap(function(designls, dupcorls, 
+              list(design_ls, dupcor_ls, combined_dflist,
+                   names(combined_dflist)) |>
+                purrr::pmap(function(designls, dupcorls,
                                      combined_data, covar_name){
-                  message(paste0("Fitting limma models for ", mode, 
-                                 " in ", study, "_", population, 
-                                 " with covariates set: ", 
+                  message(paste0("Fitting limma models for ", mode,
+                                 " in ", study, "_", population,
+                                 " with covariates set: ",
                                  covar_name, " ..."))
-                  
+
                   block <- combined_data$rand_id
-                  
+
                   list(designls, dupcorls) |>
                     furrr::future_pmap(function(design, dupcor) {
                       fit_limma(metabo, design,
                                 block = block,
                                 correlation = dupcor$consensus.correlation)
                     }, .options = furrr_options(seed = TRUE), .progress = TRUE)
-                  
+
                 })
             })
         })

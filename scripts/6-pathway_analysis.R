@@ -31,6 +31,10 @@ load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
 
 # Create output directories --------------------------------------------------
 
+exp_toexclude_total <- quote_all(cox)
+exp_toexclude_cox <- quote_all(exp, wqs, qgcomp_all, qgcomp_traffic, 
+                               qgcomp_metal, comp_pca)
+
 # clean up the combined datalist
 combined_data_list_new <- combined_data_list_new |> 
   purrr::imap(function(datalist, study){
@@ -40,10 +44,14 @@ combined_data_list_new <- combined_data_list_new |>
           purrr::imap(function(data, covar_name){
             if (study == "total") {
               data |> 
-                dplyr::select(-matches("cox"))
+                dplyr::select(
+                  -matches(str_c(exp_toexclude_total, collapse = "|"))
+                )
             } else {
               data |> 
-                dplyr::select(-matches("exp|wqs|qgcomp_all|qgcomp_traffic|qgcomp_metal"))
+                dplyr::select(
+                  -matches(str_c(exp_toexclude_cox, collapse = "|"))
+                )
             }
           })
       })
