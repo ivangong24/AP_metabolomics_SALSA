@@ -243,8 +243,11 @@ message(paste0("Setting up parallel plan with ", n_workers, " workers..."))
 ## Use multicore (fork-based) instead of multisession to avoid serializing
 ## the large metabolome matrices to each worker process. Fork-based parallelism
 ## shares parent memory via copy-on-write, which is much faster for large objects.
-## NOTE: multicore requires running from terminal, not RStudio.
+## NOTE: multicore requires running from terminal, not RStudio. If running in 
+## RStudio, you may need to switch to multisession, but be aware of potential 
+# performance issues due to data copying.
 future::plan(future::multicore, workers = n_workers)
+# future::plan(future::multisession, workers = n_workers)
 
 ## WARNING! This step could take a very long time (could run for several days) ...
 
