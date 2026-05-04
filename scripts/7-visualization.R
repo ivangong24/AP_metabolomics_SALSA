@@ -82,6 +82,7 @@ exposure_vars_list <- combined_data_list_new |>
   purrr::map(function(datalist){
     datalist[["all"]][["covar"]] |>
       dplyr::select(starts_with("comp_"), ends_with("iqr")) |>
+      # dplyr::select(-starts_with("comp_pca")) |>
       colnames()
   })
 
@@ -159,7 +160,13 @@ create_volcano_plot <- function(mwas_result_c18, mwas_result_hilic,
     dplyr::pull(met)
 
   plot_data <- plot_data |>
-    dplyr::mutate(label = ifelse(met %in% top_mets, compound, ""))
+    dplyr::mutate(
+      # Keep only the first compound when multiple matches are separated by ";"
+      compound_first = stringr::str_squish(
+        stringr::str_split_i(compound, ";", 1)
+      ),
+      label = ifelse(met %in% top_mets, compound_first, "")
+    )
 
   # Create volcano plot
   p <- ggplot(plot_data, aes(x = logFC, y = neg_log10_p)) +
@@ -192,7 +199,7 @@ create_volcano_plot <- function(mwas_result_c18, mwas_result_hilic,
     # Add labels
     geom_label_repel(
       aes(label = label),
-      size = 3,
+      size = 4.5,
       max.overlaps = 20,
       box.padding = 0.5,
       point.padding = 0.3,
@@ -214,12 +221,12 @@ create_volcano_plot <- function(mwas_result_c18, mwas_result_hilic,
     # Theme
     theme_classic() +
     theme(
-      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-      axis.title = element_text(face = "bold", size = 12),
-      axis.text = element_text(size = 10),
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+      axis.title = element_text(face = "bold", size = 14),
+      axis.text = element_text(size = 13),
       legend.position = "right",
-      legend.title = element_text(face = "bold", size = 10),
-      legend.text = element_text(size = 9)
+      legend.title = element_text(face = "bold", size = 13),
+      legend.text = element_text(size = 12)
     )
 
   return(p)
@@ -404,7 +411,7 @@ create_population_scatter <- function(mwas_list_c18, mwas_list_hilic,
     ggpubr::stat_cor(
       method = "pearson",
       label.x.npc = "left", label.y.npc = "top",
-      size = 4, fontface = "italic"
+      size = 5.5, fontface = "italic"
     ) +
     # geom_text(
     #   data = cor_labels,
@@ -420,13 +427,13 @@ create_population_scatter <- function(mwas_list_c18, mwas_list_hilic,
     ) +
     theme_classic() +
     theme(
-      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-      axis.title = element_text(face = "bold", size = 12),
-      axis.text = element_text(size = 10),
-      strip.text = element_text(face = "bold", size = 12),
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+      axis.title = element_text(face = "bold", size = 14),
+      axis.text = element_text(size = 13),
+      strip.text = element_text(face = "bold", size = 14),
       legend.position = "right",
-      legend.title = element_text(face = "bold", size = 10),
-      legend.text = element_text(size = 9)
+      legend.title = element_text(face = "bold", size = 13),
+      legend.text = element_text(size = 12)
     )
 
   return(p)
@@ -461,14 +468,14 @@ create_covariate_scatter <- function(mwas_list_c18, mwas_list_hilic,
     dplyr::mutate(
       significant = case_when(
         P.Value_cov1 < 0.05 & P.Value_cov2 < 0.05 ~ "Both P < 0.05",
-        P.Value_cov1 < 0.05 ~ paste0("Primary analysis -", " P < 0.05"),
-        P.Value_cov2 < 0.05 ~ paste0("Sensitivity analysis -", " P < 0.05"),
+        P.Value_cov1 < 0.05 ~ "Primary \u2013 P < 0.05",
+        P.Value_cov2 < 0.05 ~ "Sensitivity \u2013 P < 0.05",
         TRUE ~ "NS"
       ),
       significant = factor(significant,
                            levels = c("Both P < 0.05",
-                                      paste0("Primary analysis -", " P < 0.05"),
-                                      paste0("Sensitivity analysis -", " P < 0.05"),
+                                      "Primary \u2013 P < 0.05",
+                                      "Sensitivity \u2013 P < 0.05",
                                       "NS"))
     )
 
@@ -508,8 +515,8 @@ create_covariate_scatter <- function(mwas_list_c18, mwas_list_hilic,
     scale_color_manual(
       values = c(
         "Both P < 0.05" = "#B73F42",
-        setNames("#DE9960", paste0("Primary analysis -", " P < 0.05")),
-        setNames("#436C85", paste0("Sensitivity analysis -", " P < 0.05"))
+        setNames("#DE9960", "Primary \u2013 P < 0.05"),
+        setNames("#436C85", "Sensitivity \u2013 P < 0.05")
       ),
       name = "Significance"
     ) +
@@ -523,7 +530,7 @@ create_covariate_scatter <- function(mwas_list_c18, mwas_list_hilic,
     ggpubr::stat_cor(
       method = "pearson",
       label.x.npc = "left", label.y.npc = "top",
-      size = 4, fontface = "italic"
+      size = 5.5, fontface = "italic"
     ) +
     # annotate("text", x = Inf, y = -Inf,
     #          label = cor_label,
@@ -535,12 +542,12 @@ create_covariate_scatter <- function(mwas_list_c18, mwas_list_hilic,
     ) +
     theme_classic() +
     theme(
-      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-      axis.title = element_text(face = "bold", size = 12),
-      axis.text = element_text(size = 10),
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+      axis.title = element_text(face = "bold", size = 14),
+      axis.text = element_text(size = 13),
       legend.position = "right",
-      legend.title = element_text(face = "bold", size = 10),
-      legend.text = element_text(size = 9)
+      legend.title = element_text(face = "bold", size = 13),
+      legend.text = element_text(size = 12)
     )
 
   return(p)
@@ -845,8 +852,9 @@ study_names |>
   })
 
 
-# Combined panel figures for QGcomp composite: cross-sectional + time-to-event
-# Per population, 2 rows (A-B through E-F): cross-sectional then time-to-event
+# Combined panel figures for WQS + QGcomp + QGcomp-Cox composites
+# Per population, 3 rows (A-C / D-F / G-I):
+# cross-sectional WQS, cross-sectional QGcomp, time-to-event QGcomp-Cox
 
 population_names |>
   purrr::set_names() |>
@@ -862,14 +870,14 @@ population_names |>
           legend.background = element_rect(colour = "grey80", fill = "white",
                                            linewidth = 0.5),
           legend.margin = margin(4, 6, 4, 6),
-          legend.title = element_text(face = "bold", size = 12),
-          legend.text = element_text(size = 11),
-          legend.key.size = unit(0.5, "cm")
+          legend.title = element_text(face = "bold", size = 14),
+          legend.text = element_text(size = 13),
+          legend.key.size = unit(0.6, "cm")
         )
 
         # Tag theme applied to each plot
         tag_theme <- theme(
-          plot.tag = element_text(face = "bold", size = 14)
+          plot.tag = element_text(face = "bold", size = 18)
         )
 
         # Helper to build one row of 3 plots for a given study
@@ -906,35 +914,46 @@ population_names |>
         }
 
         # Row labels as text grobs
-        label_cross <- patchwork::wrap_elements(
-          grid::textGrob("Cross-sectional",
+        label_wqs <- patchwork::wrap_elements(
+          grid::textGrob("WQS Composite (cross-sectional)",
                          x = 0.02, hjust = 0,
-                         gp = grid::gpar(fontface = "bold", fontsize = 14))
+                         gp = grid::gpar(fontface = "bold", fontsize = 16))
         )
-        label_tte <- patchwork::wrap_elements(
-          grid::textGrob("Time-to-event",
+        label_qgcomp <- patchwork::wrap_elements(
+          grid::textGrob("QGcomp Composite (cross-sectional)",
                          x = 0.02, hjust = 0,
-                         gp = grid::gpar(fontface = "bold", fontsize = 14))
+                         gp = grid::gpar(fontface = "bold", fontsize = 16))
+        )
+        label_cox <- patchwork::wrap_elements(
+          grid::textGrob("QGcomp Composite (time-to-event)",
+                         x = 0.02, hjust = 0,
+                         gp = grid::gpar(fontface = "bold", fontsize = 16))
         )
 
-        # Build plot rows with manual A-F tags
-        row_total <- build_row("total", "comp_qgcomp_all", c("A", "B", "C"))
-        row_cox   <- build_row("cox", "comp_qgcomp_cox_all", c("D", "E", "F"))
+        # Build plot rows with manual A-I tags
+        row_wqs    <- build_row("total", "comp_wqs_all",        c("A", "B", "C"))
+        row_qgcomp <- build_row("total", "comp_qgcomp_all",     c("D", "E", "F"))
+        row_cox    <- build_row("cox",   "comp_qgcomp_cox_all", c("G", "H", "I"))
 
-        # Stack: label / plots / label / plots with height ratios
-        combined <- (label_cross / row_total / label_tte / row_cox) +
-          patchwork::plot_layout(heights = c(0.04, 1, 0.04, 1))
+        # Stack: label / plots for each of the three rows
+        combined <- (label_wqs / row_wqs /
+                       label_qgcomp / row_qgcomp /
+                       label_cox / row_cox) +
+          patchwork::plot_layout(heights = c(0.04, 1, 0.04, 1, 0.04, 1))
 
-        # Save to both the total and cox exposure folders
+        # Save to the WQS, QGcomp, and QGcomp-Cox exposure folders
         purrr::walk(
           c(here::here("figures", "mwas", "total", pop, cov,
+                       "comp_wqs_all",
+                       "combined_qgcomp_cross_study.png"),
+            here::here("figures", "mwas", "total", pop, cov,
                        "comp_qgcomp_all",
                        "combined_qgcomp_cross_study.png"),
             here::here("figures", "mwas", "cox", pop, cov,
                        "comp_qgcomp_cox_all",
                        "combined_qgcomp_cross_study.png")),
           ~ ggsave(filename = .x, plot = combined,
-                   width = 24, height = 16, dpi = 300)
+                   width = 24, height = 24, dpi = 300)
         )
       })
   })
@@ -1127,19 +1146,31 @@ create_manhattan <- function(mwas_result_c18, mwas_result_hilic,
 
   # Helper to prepare data for one platform
   prep_platform <- function(mwas_result, platform_label) {
+    # Normalize: ensure 'met' column exists (combined results have it as a column;
+    # raw mwas results have it as rownames)
+    if (!"met" %in% colnames(mwas_result)) {
+      mwas_result <- mwas_result |> tibble::rownames_to_column("met")
+    }
+    # Add a VIP_comp1 column if missing so case_when always resolves
+    if (!"VIP_comp1" %in% colnames(mwas_result)) {
+      mwas_result$VIP_comp1 <- NA_real_
+    }
+
     mwas_result |>
-      tibble::rownames_to_column("met") |>
       dplyr::mutate(
         # Parse m/z from feature name: mz_rt_[mz]_[rt]
         mz = as.numeric(stringr::str_extract(met, "(?<=mz_rt_)[0-9.]+")),
         neg_log10_p = -log10(P.Value),
         significant = case_when(
           adj.P.Val < 0.05 ~ "FDR < 0.05",
+          P.Value < 0.05 & !is.na(VIP_comp1) & VIP_comp1 > 2 ~ "P < 0.05 & VIP > 2",
           P.Value < 0.05 ~ "P < 0.05",
           TRUE ~ "NS"
         ),
         significant = factor(significant,
-                             levels = c("FDR < 0.05", "P < 0.05", "NS")),
+                             levels = c("FDR < 0.05",
+                                        "P < 0.05 & VIP > 2",
+                                        "P < 0.05", "NS")),
         platform = platform_label
       )
   }
@@ -1154,11 +1185,14 @@ create_manhattan <- function(mwas_result_c18, mwas_result_hilic,
     dplyr::group_by(platform) |>
     dplyr::summarize(
       n_fdr = sum(adj.P.Val < 0.05),
+      n_p_vip = sum(P.Value < 0.05 & !is.na(VIP_comp1) & VIP_comp1 > 2),
       n_nom = sum(P.Value < 0.05),
       .groups = "drop"
     ) |>
     dplyr::mutate(
-      label = paste0("FDR < 0.05: ", n_fdr, "\nP < 0.05: ", n_nom),
+      label = paste0("FDR < 0.05: ", n_fdr,
+                     "\nP < 0.05 & VIP > 2: ", n_p_vip,
+                     "\nP < 0.05: ", n_nom),
       # Position in top-right corner
       mz = Inf,
       neg_log10_p = Inf
@@ -1180,7 +1214,9 @@ create_manhattan <- function(mwas_result_c18, mwas_result_hilic,
       size = 1.8
     ) +
     scale_color_manual(
-      values = c("FDR < 0.05" = "#B73F42", "P < 0.05" = "#DE9960"),
+      values = c("FDR < 0.05" = "#B73F42",
+                 "P < 0.05 & VIP > 2" = "#436C85",
+                 "P < 0.05" = "#DE9960"),
       name = "Significance",
       drop = FALSE
     ) +
@@ -1270,24 +1306,24 @@ population_names |>
 
         # Row 1: WQS composite (cross-sectional) — no x-axis
         p_wqs <- create_manhattan(
-          mwas_results_list_c18[["total"]][[pop]][[cov]][["comp_wqs_all"]],
-          mwas_results_list_hilic[["total"]][[pop]][[cov]][["comp_wqs_all"]],
+          combined_results_list_c18[["total"]][[pop]][[cov]][["comp_wqs_all"]],
+          combined_results_list_hilic[["total"]][[pop]][[cov]][["comp_wqs_all"]],
           exposure_name = "comp_wqs_all"
         ) +
           labs(title = NULL, tag = "A") + no_title + no_xaxis
 
         # Row 2: QGcomp composite (cross-sectional) — no x-axis
         p_qgcomp <- create_manhattan(
-          mwas_results_list_c18[["total"]][[pop]][[cov]][["comp_qgcomp_all"]],
-          mwas_results_list_hilic[["total"]][[pop]][[cov]][["comp_qgcomp_all"]],
+          combined_results_list_c18[["total"]][[pop]][[cov]][["comp_qgcomp_all"]],
+          combined_results_list_hilic[["total"]][[pop]][[cov]][["comp_qgcomp_all"]],
           exposure_name = "comp_qgcomp_all"
         ) +
           labs(title = NULL, tag = "B") + no_title + no_xaxis
 
         # Row 3: QGcomp Cox composite (time-to-event) — keep x-axis
         p_cox <- create_manhattan(
-          mwas_results_list_c18[["cox"]][[pop]][[cov]][["comp_qgcomp_cox_all"]],
-          mwas_results_list_hilic[["cox"]][[pop]][[cov]][["comp_qgcomp_cox_all"]],
+          combined_results_list_c18[["cox"]][[pop]][[cov]][["comp_qgcomp_cox_all"]],
+          combined_results_list_hilic[["cox"]][[pop]][[cov]][["comp_qgcomp_cox_all"]],
           exposure_name = "comp_qgcomp_cox_all"
         ) +
           labs(title = NULL, tag = "C") + no_title
@@ -1338,6 +1374,235 @@ population_names |>
             here::here("figures", "mwas", "cox", pop, cov,
                        "comp_qgcomp_cox_all",
                        "manhattan_composite_panel.png")),
+          ~ ggsave(filename = .x, plot = combined,
+                   width = 14, height = 18, dpi = 300)
+        )
+      })
+  })
+
+
+# =============================================================================
+# SECTION 6b: VIP MANHATTAN-STYLE PLOT
+# =============================================================================
+
+# Function to create VIP Manhattan plot (faceted by platform) ----------------
+
+create_vip_manhattan <- function(combined_result_c18, combined_result_hilic,
+                                 exposure_name, vip_threshold = 2) {
+
+  # Helper to prepare data for one platform
+  prep_platform <- function(combined_result, platform_label) {
+    if (!"met" %in% colnames(combined_result)) {
+      combined_result <- combined_result |> tibble::rownames_to_column("met")
+    }
+
+    combined_result |>
+      dplyr::mutate(
+        # Parse m/z from feature name: mz_rt_[mz]_[rt]
+        mz = as.numeric(stringr::str_extract(met, "(?<=mz_rt_)[0-9.]+")),
+        significant = dplyr::case_when(
+          !is.na(VIP_comp1) & VIP_comp1 > vip_threshold ~
+            paste0("VIP > ", vip_threshold),
+          TRUE ~ "NS"
+        ),
+        significant = factor(significant,
+                             levels = c(paste0("VIP > ", vip_threshold), "NS")),
+        platform = platform_label
+      )
+  }
+
+  plot_data <- dplyr::bind_rows(
+    prep_platform(combined_result_c18, "C18/neg\u2212"),
+    prep_platform(combined_result_hilic, "HILIC/pos+")
+  )
+
+  # Count high-VIP features per platform for annotation labels
+  count_labels <- plot_data |>
+    dplyr::group_by(platform) |>
+    dplyr::summarize(
+      n_vip = sum(!is.na(VIP_comp1) & VIP_comp1 > vip_threshold),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      label = paste0("VIP > ", vip_threshold, ": ", n_vip),
+      mz = Inf,
+      VIP_comp1 = Inf
+    )
+
+  p <- ggplot(plot_data, aes(x = mz, y = VIP_comp1)) +
+    # Non-significant points first
+    geom_point(
+      data = \(d) dplyr::filter(d, significant == "NS"),
+      color = "grey70",
+      alpha = 0.4,
+      size = 1.2
+    ) +
+    # High-VIP points on top
+    geom_point(
+      data = \(d) dplyr::filter(d, significant != "NS"),
+      aes(color = significant),
+      alpha = 0.7,
+      size = 1.8
+    ) +
+    scale_color_manual(
+      values = setNames("#DE9960", paste0("VIP > ", vip_threshold)),
+      name = "Selection",
+      drop = FALSE
+    ) +
+    geom_hline(yintercept = vip_threshold, linetype = "dashed",
+               color = "grey40", linewidth = 0.4) +
+    # Feature count annotation in top-right corner
+    geom_text(
+      data = count_labels,
+      aes(x = mz, y = VIP_comp1, label = label),
+      hjust = 1.05, vjust = 1.2,
+      size = 3.5, fontface = "bold",
+      inherit.aes = FALSE
+    ) +
+    facet_wrap(~ platform, scales = "free_x") +
+    labs(
+      title = gsub("exp_|comp_", "", exposure_name),
+      x = expression(bold("Mass-to-charge ratio (" * italic(m/z) * ")")),
+      y = "VIP (component 1)"
+    ) +
+    theme_classic() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+      axis.title = element_text(face = "bold", size = 12),
+      axis.text = element_text(size = 10),
+      strip.text = element_text(face = "bold", size = 12),
+      strip.background = element_rect(fill = "grey95", colour = NA),
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      legend.background = element_rect(colour = "grey80", fill = "white",
+                                       linewidth = 0.5),
+      legend.margin = margin(4, 6, 4, 6),
+      legend.title = element_text(face = "bold", size = 12),
+      legend.text = element_text(size = 11),
+      legend.key.size = unit(0.5, "cm")
+    )
+
+  return(p)
+}
+
+
+# Create VIP Manhattan plots for each exposure ------------------------------
+
+study_names |>
+  purrr::set_names() |>
+  purrr::map(function(study) {
+    population_names |>
+      purrr::set_names() |>
+      purrr::map(function(pop) {
+        covar_names |>
+          purrr::set_names() |>
+          purrr::map(function(cov) {
+            purrr::map(exposure_vars_list[[study]], function(exp) {
+              p <- create_vip_manhattan(
+                combined_results_list_c18[[study]][[pop]][[cov]][[exp]],
+                combined_results_list_hilic[[study]][[pop]][[cov]][[exp]],
+                exposure_name = exp
+              )
+              ggsave(
+                filename = here::here("figures", "mwas", study, pop, cov, exp,
+                                      glue::glue("manhattan_vip_{exp}.png")),
+                plot = p,
+                width = 14, height = 6, dpi = 300
+              )
+            })
+          })
+      })
+  })
+
+
+# Combined VIP Manhattan panel: WQS all / QGcomp all / QGcomp Cox all -------
+# 3 rows x 1 col per population x covariate set
+
+population_names |>
+  purrr::set_names() |>
+  purrr::map(function(pop) {
+    covar_names |>
+      purrr::set_names() |>
+      purrr::map(function(cov) {
+
+        # Shared modifiers
+        no_title <- theme(plot.title = element_blank())
+        no_xaxis <- theme(
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank()
+        )
+
+        # Row 1: WQS composite (cross-sectional) — no x-axis
+        p_wqs <- create_vip_manhattan(
+          combined_results_list_c18[["total"]][[pop]][[cov]][["comp_wqs_all"]],
+          combined_results_list_hilic[["total"]][[pop]][[cov]][["comp_wqs_all"]],
+          exposure_name = "comp_wqs_all"
+        ) +
+          labs(title = NULL, tag = "A") + no_title + no_xaxis
+
+        # Row 2: QGcomp composite (cross-sectional) — no x-axis
+        p_qgcomp <- create_vip_manhattan(
+          combined_results_list_c18[["total"]][[pop]][[cov]][["comp_qgcomp_all"]],
+          combined_results_list_hilic[["total"]][[pop]][[cov]][["comp_qgcomp_all"]],
+          exposure_name = "comp_qgcomp_all"
+        ) +
+          labs(title = NULL, tag = "B") + no_title + no_xaxis
+
+        # Row 3: QGcomp Cox composite (time-to-event) — keep x-axis
+        p_cox <- create_vip_manhattan(
+          combined_results_list_c18[["cox"]][[pop]][[cov]][["comp_qgcomp_cox_all"]],
+          combined_results_list_hilic[["cox"]][[pop]][[cov]][["comp_qgcomp_cox_all"]],
+          exposure_name = "comp_qgcomp_cox_all"
+        ) +
+          labs(title = NULL, tag = "C") + no_title
+
+        # Row labels
+        label_wqs <- patchwork::wrap_elements(
+          grid::textGrob("WQS Composite (cross-sectional)",
+                         x = 0.02, hjust = 0,
+                         gp = grid::gpar(fontface = "bold", fontsize = 12))
+        )
+        label_qgcomp <- patchwork::wrap_elements(
+          grid::textGrob("QGcomp Composite (cross-sectional)",
+                         x = 0.02, hjust = 0,
+                         gp = grid::gpar(fontface = "bold", fontsize = 12))
+        )
+        label_cox <- patchwork::wrap_elements(
+          grid::textGrob("QGcomp Composite (time-to-event)",
+                         x = 0.02, hjust = 0,
+                         gp = grid::gpar(fontface = "bold", fontsize = 12))
+        )
+
+        combined <- (label_wqs / p_wqs / label_qgcomp / p_qgcomp /
+                       label_cox / p_cox) +
+          patchwork::plot_layout(
+            heights = c(0.03, 1, 0.03, 1, 0.03, 1),
+            guides = "collect"
+          ) &
+          theme(
+            legend.position = "bottom",
+            legend.box = "horizontal",
+            legend.background = element_rect(colour = "grey80", fill = "white",
+                                             linewidth = 0.5),
+            legend.margin = margin(4, 6, 4, 6),
+            legend.title = element_text(face = "bold", size = 12),
+            legend.text = element_text(size = 11),
+            legend.key.size = unit(0.5, "cm"),
+            plot.tag = element_text(face = "bold", size = 14)
+          )
+
+        # Save to both total and cox folders
+        purrr::walk(
+          c(here::here("figures", "mwas", "total", pop, cov,
+                       "comp_wqs_all",
+                       "manhattan_vip_composite_panel.png"),
+            here::here("figures", "mwas", "total", pop, cov,
+                       "comp_qgcomp_all",
+                       "manhattan_vip_composite_panel.png"),
+            here::here("figures", "mwas", "cox", pop, cov,
+                       "comp_qgcomp_cox_all",
+                       "manhattan_vip_composite_panel.png")),
           ~ ggsave(filename = .x, plot = combined,
                    width = 14, height = 18, dpi = 300)
         )

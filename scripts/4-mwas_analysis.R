@@ -784,8 +784,8 @@ combine_mwas_vip <- function(mwas_results, vip_results, annotation_df = NULL) {
 
 list(
   list("C18", "HILIC"),
-  list(mwas_results_list_c18, mwas_results_list_c18),
-  list(vip_c18_list, vip_c18_list)
+  list(mwas_results_list_c18, mwas_results_list_hilic),
+  list(vip_c18_list, vip_hilic_list)
 ) |> 
   purrr::pmap(function(mode, mwas_data_list, vip_data_list){
     list(mwas_data_list, vip_data_list, 
