@@ -30,7 +30,7 @@ source(here::here("scripts", "2-load_data.R"))
     dplyr::select(rand_id, bl_date, enrollment, birth_date, 
                   gender, blage, ageatcind, ageatdem, ageatdc, 
                   ses3, dem, cind, demcind, 
-                  mh62, mh65, mh66, mh67, 
+                  mh62, mh65, mh66, mh67, finalapoe,
                   pa3_met_if_ca, quinyostct, county, ruca_metro) |> 
     dplyr::rename(
       edu_year = ses3
@@ -48,6 +48,11 @@ source(here::here("scripts", "2-load_data.R"))
         quinyostct %in% c(2, "2") ~ 2,
         quinyostct %in% c(3, "3") ~ 3,
         quinyostct %in% c(4, "4", 5, "5") ~ 4
+      ),
+      apoe = case_when(
+        finalapoe %in% c(1, 3, "1", "3") ~ "Non Apoe4 carrier",
+        finalapoe %in% c(2, 4, 5, "2", "4", "5") ~ "Apoe4 carrier",
+        TRUE ~ NA_character_
       )) |> 
     dplyr::select(-c(mh65, mh66, mh67)) |> 
     # in 1789 participants, 3 missed blage, 10 missed edu_year,
@@ -103,6 +108,7 @@ source(here::here("scripts", "2-load_data.R"))
       county = "County of residence",
       alcohol_drinking = "Baseline Alcohol drinking status",
       nses = "Neighborhood socioeconomic status",
+      apoe = "Apoe4 carrier status",
       pa3_met_if_ca = "Baseline Physical activity status",
       ruca_metro = "Urban Residence",
       edu_year = "Years of education",

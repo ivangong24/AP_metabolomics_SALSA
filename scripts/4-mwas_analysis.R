@@ -239,22 +239,11 @@ list(
 ## Set up parallel backend
 n_workers <- max(1, future::availableCores() - 1)
 message(paste0("Setting up parallel plan with ", n_workers, " workers..."))
+future::plan(future::multisession, workers = n_workers)
 
-## Use multicore (fork-based) instead of multisession to avoid serializing
-## the large metabolome matrices to each worker process. Fork-based parallelism
-## shares parent memory via copy-on-write, which is much faster for large objects.
-## NOTE: multicore requires running from terminal, not RStudio. If running in 
-## RStudio, you may need to switch to multisession, but be aware of potential 
-# performance issues due to data copying.
-future::plan(future::multicore, workers = n_workers)
-# future::plan(future::multisession, workers = n_workers)
-
-## WARNING! This step could take a very long time (could run for several days) ...
+## WARNING! This step could take a very long time (could run for several days) ... 
 
 ## Estimate duplicate correlation for each exposure and population
-## OPTIMIZATION: All jobs per mode are collected into a flat list via pmap,
-## then run in a single future_map call so workers stay busy continuously,
-## instead of many sequential future_map calls with idle gaps between groups.
 system.time({
   list(
     list("C18", "HILIC"),
@@ -262,58 +251,35 @@ system.time({
     list(design_c18_list, design_hilic_list),
     list(combined_data_list_c18, combined_data_list_hilic)
   ) |>
-    purrr::pmap(function(mode, metabo_data_list, design_data_list,
+    purrr::pmap(function(mode, metabo_data_list, design_data_list, 
                          combined_data_list) {
-
-      ## Collect all jobs as a flat list using nested pmap
-      jobs <- list(design_data_list, metabo_data_list,
-                   combined_data_list, names(combined_data_list)) |>
-        purrr::pmap(function(design_list, metabo_list,
-                             combined_df_list, study) {
-          list(design_list, metabo_list,
+      list(design_data_list, metabo_data_list, 
+           combined_data_list, names(combined_data_list)) |> 
+        purrr::pmap(function(design_list, metabo_list, 
+                             combined_df_list, study){
+          list(design_list, metabo_list, 
                combined_df_list, names(combined_df_list)) |>
-            purrr::pmap(function(design_ls, metabo,
-                                 combined_dflist, population) {
-              block <- combined_dflist[[1]]$rand_id
-              stopifnot(
-                length(block) == ncol(metabo),
-                all(combined_dflist[[1]]$file.name_new == colnames(metabo)))
-
-              list(design_ls, combined_dflist, names(combined_dflist)) |>
-                purrr::pmap(function(designls, combined_data, covar_name) {
+            purrr::pmap(function(design_ls, metabo, 
+                                 combined_dflist, population){
+              list(design_ls, combined_dflist, names(combined_dflist)) |> 
+                purrr::pmap(function(designls, combined_data, covar_name){
+                  message(paste0("Calculating duplicate correlation for ", mode, 
+                                 " in ", study, "_", population, 
+                                 " with covariates set: ", covar_name, " ..."))
+                  
+                  block <- combined_data$rand_id
+                  stopifnot(
+                    length(block) == ncol(metabo),
+                    all(combined_data$file.name_new == colnames(metabo)))
+                  
                   designls |>
-                    purrr::imap(function(design, exp_name) {
-                      list(study = study, population = population,
-                           covar_name = covar_name, exp_name = exp_name,
-                           design = design, metabo = metabo,
-                           block = combined_data$rand_id)
-                    })
+                    furrr::future_map(function(design) {
+                      limma::duplicateCorrelation(metabo, design, block = block)
+                    }, .options = furrr_options(seed = TRUE), .progress = TRUE)
+                  
                 })
             })
-        }) |>
-        purrr::list_flatten() |>
-        purrr::list_flatten() |>
-        purrr::list_flatten()
-
-      message(paste0("Running ", length(jobs),
-                     " duplicateCorrelation jobs for ", mode, " ..."))
-
-      ## Run all jobs in a single future_map call
-      results <- furrr::future_map(jobs, function(job) {
-        limma::duplicateCorrelation(job$metabo, job$design, block = job$block)
-      }, .options = furrr_options(seed = TRUE), .progress = TRUE)
-
-      ## Reconstruct nested list structure (study > population > covar > exposure)
-      purrr::imap(results, function(res, i) {
-        j <- jobs[[i]]
-        list(study = j$study, population = j$population,
-             covar_name = j$covar_name, exp_name = j$exp_name,
-             result = res)
-      }) |>
-        purrr::reduce(function(acc, x) {
-          acc[[x$study]][[x$population]][[x$covar_name]][[x$exp_name]] <- x$result
-          acc
-        }, .init = list())
+        })
     }) |>
     purrr::set_names("dupcor_c18_list", "dupcor_hilic_list") |>
     list2env(.GlobalEnv)
