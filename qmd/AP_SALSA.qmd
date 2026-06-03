@@ -7,7 +7,7 @@ format:
     theme: cosmo
     number-sections: true
     toc: true
-    toc-depth: 4
+    toc-depth: 5
     toc-location: left
     code-fold: true
     df_print: paged
@@ -29,120 +29,94 @@ knitr::opts_chunk$set(warning = FALSE, message=FALSE)
 
 # Introduction
 
-Air pollution exposure has been linked to various adverse health outcomes, including cognitive decline and dementia. However, the biological mechanisms underlying these associations remain poorly understood. Metabolomics provides a powerful approach to identify molecular signatures and biological pathways that may mediate the effects of environmental exposures on health.
+Long-term exposure to ambient air pollution has been linked to cognitive decline and dementia, yet the metabolic mechanisms underlying these associations remain largely unexplored, particularly in older Latino populations. High-resolution metabolomics (HRM) offers a hypothesis-free strategy to detect exposure-related perturbations across interconnected metabolic pathways. The Sacramento Area Latino Study on Aging (SALSA) provides a well-characterized prospective cohort of older Mexican Americans with long-term residential air-toxicant exposure estimates and serum specimens profiled on two complementary LC-HRMS platforms.
 
-This study investigates the association between air toxicant composite exposure and the metabolomic profile among participants of the Sacramento Area Latino Study on Aging (SALSA). We conducted a metabolome-wide association study (MWAS) to identify metabolites associated with composite air toxicant mixtures, followed by pathway enrichment analysis to characterize the biological processes affected.
+This report summarizes a metabolome-wide association study (MWAS) of residential air-toxicant exposure in SALSA, conducted across individual pollutants and three mixture composites (WQS, QGcomp, and QGcomp Cox), with downstream pathway enrichment and a cross-cohort feature-level meta-analysis against the Washington Heights / Inwood Columbia Aging Project (WHICAP).
 
 # Methods
 
 ## Study population
 
-The Sacramento Area Latino Study on Aging (SALSA) is a population-based, prospective cohort study of foreign and US-born Latino respondents living in the Sacramento Valley region of Northern California. The study tracks the incidence of physical and cognitive impairment, dementia, and cardiovascular diseases in elderly Latinos. Participants were included in this analysis if they had metabolomics data available.
+Of the 1,789 SALSA participants enrolled between 1998 and 1999, 952 had serum metabolomics profiled and form the cross-sectional cohort. For time-to-event analyses, 42 participants with baseline dementia or cognitive impairment but not demented (CIND) and 2 without follow-up were excluded, yielding 908. Analyses were additionally stratified by incident dementia/CIND status.
 
-## Air toxicants exposure assessment
+## Air toxicant exposure assessment
 
-Air toxicant exposures were estimated using geocoded residential addresses linked to modeled pollutant concentrations. Individual pollutants assessed include criteria air pollutants (PM2.5, NO2, NOx), air toxics (benzene, 1,3-butadiene), and metals (chromium, lead, nickel).
+Residential addresses were geocoded and linked to spatially resolved annual pollution surfaces. Eight individual pollutants were evaluated: benzene, 1,3-butadiene, chromium, nickel, lead, zinc, NOx (CALINE4 traffic-derived), PM~2.5~, and NO~2~ (regulatory LUR). For each blood draw, a 5-year moving average ending in the year of collection was computed, winsorized at the upper 1%, and IQR-scaled.
 
-**Exposure processing:**
+## Mixture composite indices
 
-1. For each participant, calculated the **5-year average exposure** prior to their blood draw date
-2. Applied **winsorization at the 99th percentile** to remove extreme values
-3. Scaled all exposure variables by **interquartile range (IQR)** for comparability
+Three composite indices were constructed:
 
-## Composite exposure indices
-
-To evaluate the joint effect of the air toxicant mixture, two complementary mixture modeling approaches were used to construct composite exposure indices:
-
-1. **Weighted Quantile Sum (WQS) regression** (`gWQS` package): Exposures were quantized into quartiles (`q = 4`) and modeled with 200 bootstrap replicates (`b = 200`), 60% training / 40% validation split, with dementia/CIND as the outcome (binomial family). The resulting WQS index represents a weighted sum of quantized exposures, where weights reflect each pollutant's relative contribution to the health outcome.
-
-2. **Quantile-based g-computation (QGcomp)** (`qgcomp` package): A non-bootstrap approach (`qgcomp.glm.noboot`) was used with quartile quantization (`q = 4`). Component weights were derived from the regression coefficients, and a per-participant composite index was computed as the weighted sum of quantized exposures.
-
-Three composite indices were constructed for each method: all air toxicants combined, traffic-related pollutants only, and metals only.
+1. **WQS regression** (`gWQS`): 200 bootstrap iterations, 60/40 train/validation split, dementia/CIND as outcome (binomial). Index = $\sum_j w_j q_j$ with $\sum w_j = 1$ and $w_j \geq 0$.
+2. **Quantile g-computation** (`qgcomp`, cross-sectional `qgcomp.glm.noboot`): individual coefficients are normalized to $\sum_j (\beta_j / \sum_k |\beta_k|) \cdot q_j$, preserving direction.
+3. **QGcomp Cox** (`qgcomp.cox.noboot`): the same approach applied to the Cox proportional-hazards link for the time-to-event analysis.
 
 ## Metabolomics data processing
 
-Untargeted metabolomics profiling was performed using liquid chromatography-mass spectrometry (LC-MS) with two complementary chromatographic methods:
-
-- **C18 (reverse phase, negative ionization)**: Better for nonpolar and moderately polar metabolites
-- **HILIC (hydrophilic interaction, positive ionization)**: Better for polar metabolites
-
-Raw spectral data were processed, m/z values calibrated, features normalized using median values across technical replicates, and batch effects corrected using ComBat. Metabolite features were identified using the format `mz_rt_[m/z value]_[retention time]`.
+Plasma was profiled at the Emory Clinical Biomarkers Laboratory on two complementary LC-HRMS platforms (C18/negative ESI, HILIC/positive ESI), with quality-control via pooled reference plasma (Q-std) and NIST SRM 1950. Raw data were processed with apLCMS + xMSanalyzer, triplicates summarized by the median and log~2~-transformed, and inter-batch variation corrected with ComBat (*sva*). Features detected in ≥75% of samples were retained: 9,703 in C18 and 10,422 in HILIC.
 
 ## Metabolite annotation
 
-Metabolite features were annotated using a multi-level approach:
+Two-tier annotation:
 
-1. **In-house library matching**: Matched on m/z (within 10 ppm) and retention time (within 30 seconds) against an internal standard library
-2. **xMSannotator**: Multi-level annotation against HMDB, KEGG, and LipidMaps databases with `max.mz.diff = 10` ppm and `max.rt.diff = 37` seconds
-3. Annotations were ranked by confidence score with priority: in-house library > HMDB > KEGG > LipidMaps
+1. **In-house library** of ~300 authenticated reference standards (10 ppm m/z, 30 s RT) → Schymanski Level 1.
+2. **xMSannotator** against HMDB, KEGG, LipidMaps (10 ppm, confidence > 1 retained) → Schymanski Level 3.
 
 ## Statistical analysis
 
 ### Metabolome-Wide Association Study (MWAS)
 
-Linear models were fitted using the **limma** framework for each metabolite against each exposure variable:
+For each metabolic feature, empirical-Bayes-moderated linear models were fitted with *limma*, with within-subject correlation estimated via `duplicateCorrelation()` blocking on participant ID. Significance was assessed at FDR < 0.05 (Benjamini–Hochberg). As a complementary multivariate ranking, PLS regressions (*mixOmics*) were fitted per composite, retaining three latent components; features with VIP > 2 on the first component were flagged.
 
-1. Within-subject correlation was estimated using `duplicateCorrelation()`, blocking on participant ID to account for repeated measures across visit waves
-2. Linear models were fitted with `lmFit()` incorporating the duplicate correlation structure
-3. Empirical Bayes moderation was applied via `eBayes()` to improve variance estimates
-4. P-values were adjusted using **Benjamini-Hochberg FDR** correction
-5. Significance threshold: **FDR < 0.05**
+Two covariate sets were defined:
 
-Two covariate adjustment sets were used:
+- **Primary**: age at blood draw, sex, education, smoking, urban/rural, neighborhood SES, visit wave, batch.
+- **Sensitivity**: primary + alcohol, physical activity, BMI, diabetes status.
 
-- **Primary (covar)**: age, sex, education, smoking status, visit wave, batch, dementia/CIND status
-- **Sensitivity (covar_sen)**: primary set + alcohol use, physical activity, neighborhood SES, BMI, diabetes status
+Models were run across each platform (C18, HILIC), framework (cross-sectional, time-to-event), population stratum (all, no dementia/CIND, dementia/CIND), and covariate set, without conditioning on dementia/CIND as a covariate to avoid collider bias.
 
-Analyses were performed across three population groups:
+### Pathway enrichment
 
-- **All participants**
-- **No dementia/CIND**: Participants who did not develop dementia or CIND during follow-up
-- **Dementia/CIND**: Participants who developed dementia or CIND during follow-up
+Pathway-level enrichment was assessed jointly on combined C18 + HILIC feature lists with two independent permutation-based approaches: **Mummichog** (*MetaboAnalystR*, hsa_mfn, mixed-ionization, 10 ppm, p < 0.1, 100 permutations, ≥3 hits) and **metapone** (HMDB-derived pathways, 200 permutations, 10 ppm, p < 0.05). Pathways reaching permutation p < 0.05 in either approach were considered enriched.
 
-### Pathway enrichment analysis
+### Cross-cohort meta-analysis with WHICAP
 
-Pathway enrichment was performed using **Mummichog** (via MetaboAnalystR) on the combined C18 and HILIC feature lists:
+To probe replication of SALSA mixture associations against an independent older-adult cohort, per-feature meta-analysis was performed against the Washington Heights / Inwood Columbia Aging Project (WHICAP) summary-statistic MWAS of long-term PM~2.5~.
 
-- Human metabolic network (`hsa_mfn`) with mixed ionization mode adducts
-- Significant feature threshold: p < 0.1
-- Minimum 3 hits per pathway, 100 permutations
-- Pathway significance: **Fisher's exact test p < 0.05**
+- **Feature alignment**: SALSA's ComBat-corrected feature tables and WHICAP's feature-level summary tables (mean + SD per feature) were aligned with **apLCMS** (`adjust.time` + `feature.align`, m/z tolerance 10 ppm, RT tolerance 30 s) separately for C18-neg and HILIC-pos, retaining features present in both cohorts (`min.exp = 2`).
+- **Meta-analysis**: at each aligned feature, the SALSA mixture coefficient (WQS, QGcomp, or QGcomp Cox) and the WHICAP PM~2.5~ coefficient were pooled with `meta::metagen` under both fixed-effect (FE, inverse-variance) and random-effect (RE, DerSimonian–Laird τ²) models. **FE was used as the primary summary** because k = 2 makes τ² estimation unstable. 
 
-Pathways were analyzed for the composite exposure indices (WQS all and QGcomp all) across all three population groups and both covariate sets.
+<!-- Between-cohort heterogeneity was characterized per feature via Cochran's Q, p~het~, and I². -->
 
 # Results
 
-## Study Population Characteristics
+## Study population characteristics
 
 ```{r load-table1-data, include=FALSE}
-# Load required packages
 library(tidyverse)
 library(gtsummary)
 library(labelled)
 library(here)
 
-# Load the table1 objects if they exist
 table1_file <- here::here("tables", "table1", "table1_objects.RData")
 if (file.exists(table1_file)) {
   load(table1_file)
 } else {
-  # If not, load raw data and create tables
   load(here::here("data", "processed", "salsa_clean.RData"))
   load(here::here("data", "processed", "air_toxicants_exposure.RData"))
   load(here::here("data", "processed", "sample_links.RData"))
 
-  # Get participants with metabolomics data
   participants_c18 <- sample_link_c18 |> pull(rand_id) |> unique()
   participants_hilic <- sample_link_hilic |> pull(rand_id) |> unique()
   participants_metabolomics <- union(participants_c18, participants_hilic)
 
-  # Create analysis dataset
   table1_data <- salsa_clean_total |>
     mutate(rand_id = as.character(rand_id)) |>
     filter(rand_id %in% as.character(participants_metabolomics))
 }
 ```
 
+The mean age at enrollment was 69.6 years (SD = 6.2), and 58.8% were female. Participants who developed dementia or CIND during follow-up (n = 141) were older at baseline (mean 73.4 vs 69.0 years), had fewer years of education (mean 6.4 vs 8.3), and were more likely to be never-drinkers (62.4% vs 37.6%) than those who remained cognitively intact (n = 811). Sex and smoking distributions were broadly similar.
 
 ### Table 1: By Dementia/CIND Status
 
@@ -180,96 +154,76 @@ if (exists("tbl1_by_demcind")) {
 }
 ```
 
-## MWAS Results: Air Toxicant Composite Exposures
+## MWAS results
 
-### WQS Composite (All Air Toxicants)
+### Manhattan-style overview across composites and frameworks
 
-@fig-wqs-panel shows the MWAS results for the WQS composite exposure index combining all air toxicants.
+@fig-manhattan-composite presents Manhattan-style MWAS results across the three mixture composites (WQS cross-sectional, QGcomp cross-sectional, QGcomp Cox) and both LC-MS platforms.
 
-- **Panel A (Volcano plot)**: Displays the magnitude (log fold change) and significance (-log~10~ p-value) of associations between the WQS composite and metabolite features across C18 (circles) and HILIC (triangles) platforms. Several metabolites reached FDR < 0.05 significance, with both positive and negative associations observed.
+In the cross-sectional analysis of the full cohort under the primary covariate model, the WQS composite detected 608 metabolite features at p < 0.05 and VIP > 2 (183 C18, 425 HILIC), of which 10 HILIC features survived FDR < 0.05. The QGcomp composite gave broadly comparable results: 632 features at p < 0.05 and VIP > 2 (234 C18, 398 HILIC), with 7 HILIC features remaining FDR-significant. The time-to-event QGcomp Cox composite yielded a substantially broader signal — 119 FDR-significant C18 features (39 annotated) and 24 FDR-significant HILIC features (3 annotated).
 
-- **Panel B (Population comparison)**: Compares MWAS effect sizes between the full cohort and each subgroup (dementia/CIND vs. no dementia/CIND). Effect estimates were highly correlated between the full cohort and the no dementia/CIND subgroup (R = 0.98), while correlation was moderate for the dementia/CIND subgroup (R = 0.67), suggesting that the overall metabolomic response to the air toxicant mixture is largely driven by cognitively healthy participants, with a more heterogeneous response among those who developed cognitive impairment.
+::: {#fig-manhattan-composite}
+![](figures/manhattan_composite_panel.png){width=100%}
 
-- **Panel C (Sensitivity analysis)**: Compares effect sizes between the primary and sensitivity covariate models. The high correlation (R = 0.98) indicates that additional adjustment for alcohol use, physical activity, neighborhood SES, BMI, and diabetes did not substantially alter the associations, supporting the robustness of the findings.
-
-::: {#fig-wqs-panel}
-![](figures/combined_panel_comp_wqs_all.png){width=100%}
-
-MWAS results for WQS composite air toxicant exposure (all participants, primary covariates). (A) Volcano plot of metabolite associations. (B) Comparison of effect sizes between all participants and subgroups. (C) Comparison of effect sizes between primary and sensitivity covariate models.
+Manhattan-style MWAS results for mixture composites across LC-MS platforms. Rows correspond to (A) WQS cross-sectional, (B) QGcomp cross-sectional, and (C) QGcomp Cox time-to-event composites. Columns separate C18/negative (left) and HILIC/positive (right) platforms. Features at nominal p < 0.05 are shown in orange, p < 0.05 with VIP > 2 in blue, and FDR < 0.05 in red.
 :::
 
-### QGcomp Composite (All Air Toxicants)
+### QGcomp combined cross-study panels
 
-@fig-qgcomp-panel shows the corresponding results for the QGcomp composite index.
+@fig-qgcomp-cross-study summarizes the QGcomp mixture results in both cross-sectional and time-to-event frameworks, with volcano plots, full-cohort versus subgroup effect-size comparisons, and primary versus sensitivity covariate model comparisons.
 
-- **Panel A**: The QGcomp composite identified more metabolites reaching nominal significance (P < 0.05), with a broader range of effect sizes compared to WQS.
+Cross-sectionally, **taurine** emerged as the top annotated metabolite, with abundance inversely associated with the all-toxicant composite. Two HILIC features both annotated as taurine reached FDR < 0.05 at *m/z* = 169.9859 (RT = 61.3 s, logFC = −0.114; Level 3) and *m/z* = 126.0220 (RT = 63.9 s, logFC = −0.103; in-house library, Level 1).
 
-- **Panel B**: Similar to WQS, effect estimates were strongly correlated between the full cohort and the no dementia/CIND subgroup (R = 0.99), while the dementia/CIND subgroup showed lower concordance (R = 0.60).
+In the time-to-event framework, the QGcomp Cox composite yielded 143 FDR-significant features, with **2-nitrofuran**, **AMPA**, **oxamic acid**, **Hymatoxin A**, and **citramalic acid** as top annotated hits. Effects in the cognitively-intact subgroup correlated strongly with the full-cohort estimates (Pearson's r = 0.98–0.99), while the dementia/CIND subgroup showed more moderate correlation (r = 0.60–0.72). Primary and sensitivity coefficients were strongly concordant across composites (r = 0.83–0.98), supporting robustness to additional covariate adjustment.
 
-- **Panel C**: The high correlation between primary and sensitivity models (R = 0.83) again supports robustness, though with slightly more variation compared to the WQS results, suggesting that the QGcomp-derived composite may capture slightly different aspects of the mixture effect that are more sensitive to covariate adjustment.
+::: {#fig-qgcomp-cross-study}
+![](figures/combined_qgcomp_cross_study.png){width=100%}
 
-::: {#fig-qgcomp-panel}
-![](figures/combined_panel_comp_qgcomp_all.png){width=100%}
-
-MWAS results for QGcomp composite air toxicant exposure (all participants, primary covariates). (A) Volcano plot of metabolite associations. (B) Comparison of effect sizes between all participants and subgroups. (C) Comparison of effect sizes between primary and sensitivity covariate models.
+QGcomp combined cross-study panels under the primary covariate model. Top row (A–C): cross-sectional analysis. Bottom row (D–F): time-to-event analysis. Within each row, the first panel is a volcano plot across both platforms, the second compares full-cohort coefficients with each cognitive subgroup, and the third compares primary versus sensitivity covariate models.
 :::
 
-## Pathway Enrichment Analysis
+## Pathway enrichment
 
-Pathway enrichment analysis was performed using Mummichog on significant metabolite features from the WQS and QGcomp composite exposure models. Pathways were analyzed across three population groups (all participants, no dementia/CIND, dementia/CIND) and categorized by biological function.
+@fig-pathway-bubble summarizes Mummichog pathway enrichment across the three mixture composites and three population strata (all, no dementia/CIND, dementia/CIND) under the primary covariate set.
 
-### Primary Analysis
+Pathway analysis identified 43 unique enriched pathways (p < 0.1) across modeling frameworks. **Amino acid metabolism** showed the strongest and most consistent signal (n = 15 pathways), with **alanine and aspartate metabolism ranking first** across all three composite approaches and both covariate specifications (WQS p = 7.7 × 10^−6^, enrichment factor = 2.61, 17/30 pathway metabolites significant). Aspartate and asparagine metabolism (p = 2.0 × 10^−5^, EF = 1.79), glutamate metabolism (p = 4.9 × 10^−4^), and glutathione metabolism (p = 5.3 × 10^−4^) followed. Additional enrichment was observed for vitamin/cofactor metabolism (ascorbate and aldarate), nucleotide metabolism (purine, pyrimidine), energy metabolism (TCA cycle), lipid metabolism (fatty acid oxidation), carbohydrate metabolism (N-glycan biosynthesis), and inflammation-related pathways (leukotriene). Carnitine shuttle and BCAA degradation were selectively enriched in the dementia/CIND subgroup.
 
-@fig-pathway-primary shows the pathway enrichment results using the primary covariate set.
+::: {#fig-pathway-bubble}
+![](figures/option_A_bubble_heatmap.png){width=100%}
 
-**Amino acid metabolism** was the most prominently enriched category, with multiple pathways reaching significance across both composite indices and population groups. Key findings include:
-
-- Alanine, aspartate, and glutamate metabolism pathways were consistently enriched across all population groups for both WQS and QGcomp composites, suggesting a robust effect of the air toxicant mixture on amino acid homeostasis.
-- Glutathione metabolism was enriched primarily among all participants and the no dementia/CIND subgroup, indicating potential oxidative stress responses to air toxicant exposure.
-- Arginine and proline metabolism, beta-alanine metabolism, and branched-chain amino acid metabolism showed significant enrichment, pointing to broad disruption of amino acid metabolic networks.
-
-**Energy metabolism** pathways, including the TCA cycle, carnitine shuttle, and glycolysis/gluconeogenesis, were enriched particularly in the dementia/CIND subgroup under WQS composite exposure, suggesting that mitochondrial energy production may be differentially affected in individuals with cognitive impairment.
-
-**Vitamin/cofactor metabolism** pathways (ascorbate, vitamin B6, vitamin B1, vitamin B3) were enriched across multiple groups, consistent with the known role of B vitamins in neurological health and their susceptibility to oxidative damage from environmental exposures.
-
-**Lipid metabolism** pathways, including phytanic acid peroxisomal oxidation, di-unsaturated fatty acid beta-oxidation, and fatty acid oxidation, showed enrichment primarily in the all-participants and no dementia/CIND groups.
-
-::: {#fig-pathway-primary}
-![](figures/pathway_enrichment_summary_covar.png){width=100%}
-
-Pathway enrichment summary for composite air toxicant exposures (primary analysis). Left panel: heatmap of pathway p-values across population groups and composite indices (WQS and QGcomp). Right panel: scatter plot showing -log~10~(p-value) with point size proportional to enrichment factor (hits.sig / expected). Pathways are grouped by metabolic category.
+Bubble heatmap of Mummichog pathway enrichment for the three mixture composites (WQS, QGcomp, QGcomp Cox), faceted by metabolic category (rows) and population stratum (columns). Bubble fill encodes −log~10~(p) and bubble size encodes the enrichment factor (hits.sig / expected). Rows are sorted by category and within-category minimum p-value; the x-axis groups cross-sectional and time-to-event composites.
 :::
 
-### Sensitivity Analysis
+## Cross-cohort meta-analysis with WHICAP
 
-@fig-pathway-sensitivity shows the pathway enrichment results using the sensitivity covariate set (additionally adjusted for alcohol use, physical activity, neighborhood SES, BMI, and diabetes).
+To probe replication of the SALSA mixture associations against an independent older-adult cohort, feature-level meta-analysis was performed against WHICAP's PM~2.5~ MWAS summary statistics. SALSA's ComBat-corrected feature tables (per platform) were retention-time-aligned to WHICAP's feature-level summaries with apLCMS (m/z 10 ppm, RT 30 s) and per-feature fixed-effect inverse-variance meta-analysis was performed at each aligned feature.
 
-The sensitivity analysis revealed both consistent and distinct patterns compared to the primary analysis:
+Feature alignment retained **1,478 C18-negative and 1,865 HILIC-positive features** present in both SALSA and WHICAP. Across mixture composites and strata, **8.7%–21.7% of aligned features reached FE p < 0.05**. Median Cochran's I² ranged from **0-7%** (with 48.0%–71.6% of features at I² = 0).
 
-- **Amino acid metabolism** remained the dominant enriched category, with alanine/aspartate, arginine/proline, glutathione, and glutamate metabolism pathways maintaining significance. This consistency supports the robustness of the amino acid perturbation findings.
+Notably, **taurine replicated across cohorts at FDR~FE~ < 0.05** under the WQS composite for both covariate sets and under the QGcomp Cox composite for the primary covariate set. The two HILIC features identified in the SALSA-only MWAS — *m/z* = 169.9859 (RT = 61.3 s) and *m/z* = 126.0220 (RT = 63.9 s) — were the same two features that survived FDR meta-analysis correction (WQS primary: fdr~FE~ = 0.0022 and 0.0034 respectively; WQS sensitivity: fdr~FE~ = 0.0017 and 0.0028; QGcomp Cox primary: fdr~FE~ = 0.020 and 0.048), with effect estimates negative in both SALSA and WHICAP. A third HILIC taurine feature (*m/z* = 148.0039, RT = 61.3 s) additionally reached fdr~FE~ < 0.05 under WQS sensitivity.
 
-- **Lipid metabolism** showed notably more enrichment in the sensitivity analysis, particularly in the dementia/CIND subgroup. Multiple lipid pathways (omega-3 and omega-6 fatty acid metabolism, fatty acid activation, glycosphingolipid biosynthesis, bile acid biosynthesis) emerged as significant, suggesting that after accounting for metabolic confounders (BMI, diabetes), the effect of air toxicants on lipid metabolism becomes more apparent in cognitively impaired individuals.
+@fig-meta-manhattan shows Manhattan-style plots of the per-feature fixed-effect meta-analysis p-values for the three mixture composites, with feature counts at FDR~FE~ < 0.05 and nominal P~FE~ < 0.05 annotated in the upper right of each platform facet.
 
-- **Energy metabolism** pathways including the carnitine shuttle, glyoxylate/dicarboxylate metabolism, and propanoate metabolism were enriched, consistent with the primary analysis findings of mitochondrial dysfunction.
+::: {#fig-meta-manhattan}
+![](figures/manhattan_meta_mixtures_all_covar.png){width=100%}
 
-- **Vitamin/cofactor metabolism** pathways (biopterin, vitamin A, vitamin B1, porphyrin metabolism) were enriched, with some differences in specific pathways compared to the primary analysis.
+Manhattan-style plot of fixed-effect meta-analysis p-values for the three mixture composites (WQS cross-sectional, QGcomp cross-sectional, QGcomp Cox), faceted by LC-MS platform (C18/neg, HILIC/pos). x-axis: m/z; y-axis: −log~10~(P~FE~). Features at FDR~FE~ < 0.05 are highlighted in red, nominal P~FE~ < 0.05 in orange. Per-platform feature counts are annotated in the top-right corner.
+:::
 
-::: {#fig-pathway-sensitivity}
-![](figures/pathway_enrichment_summary_covar_sen.png){width=100%}
+@fig-meta-scatter compares SALSA mixture-effect estimates with WHICAP PM~2.5~ effect estimates at meta-significant features (FE p < 0.05). Points are colored by cross-cohort consistency (same vs opposite direction, single-cohort significance) and shaped by platform.
 
-Pathway enrichment summary for composite air toxicant exposures (sensitivity analysis, additionally adjusted for alcohol, physical activity, neighborhood SES, BMI, and diabetes). Left panel: heatmap of pathway p-values. Right panel: scatter plot of -log~10~(p-value) vs. enrichment factor.
+::: {#fig-meta-scatter}
+![](figures/scatter_salsa_whicap_mixtures_all_covar.png){width=100%}
+
+SALSA vs WHICAP per-feature effect estimates at meta-significant aligned features (FE p < 0.05), faceted by mixture index (WQS cross-sectional, QGcomp cross-sectional, QGcomp Cox). Points are colored by cross-cohort agreement category and shaped by LC-MS platform (C18/neg circles, HILIC/pos triangles). Black line indicates the linear fit with 95% CI ribbon; Pearson correlation is annotated per facet.
 :::
 
 # Discussion
 
-This metabolome-wide association study identified widespread metabolomic perturbations associated with composite air toxicant exposure among SALSA participants. Several key findings emerge:
+This metabolome-wide association study identified widespread metabolomic perturbations associated with residential air-toxicant exposure in older Mexican Americans. **Taurine** was the top annotated cross-sectional hit, inversely associated with the toxicant mixture, consistent with prior literature linking PM~2.5~ to lower circulating taurine and with taurine's broad antioxidant activity. The same two HILIC taurine features that survived FDR correction in the SALSA-only analysis also reached FDR~FE~ < 0.05 in the cross-cohort meta-analysis against WHICAP — a precision-weighted replication that strengthens the SALSA finding despite the exposure mismatch between SALSA's mixture composite and WHICAP's PM~2.5~. In the time-to-event framework, **2-nitrofuran** showed consistent positive associations across cross-sectional and Cox frameworks; its Level 3 annotation and the abundance of nitroaromatic species in combustion-related pollution raise the possibility that this signal partly captures an exposure-related compound rather than an endogenous metabolite.
 
-**Amino acid metabolism is the most consistently affected pathway category.** Both WQS and QGcomp composite indices identified significant enrichment of amino acid metabolism pathways across population groups and covariate models. The involvement of glutathione metabolism suggests oxidative stress as a key mechanistic pathway, consistent with the established role of reactive oxygen species in air pollution-mediated health effects. Disruption of alanine, aspartate, and glutamate metabolism may reflect broader excitotoxicity pathways relevant to neurodegeneration.
+Pathway analysis showed the strongest and most consistent enrichment for **amino acid metabolism**, with alanine/aspartate metabolism ranking first across all composite approaches and covariate sets. Both alanine aminotransferase (ALT) and aspartate aminotransferase (AST) are sensitive markers of hepatocellular stress, and prior cohort studies have linked long-term PM~2.5~ exposure to elevated ALT/AST. Mechanistically, oxidative stress generated by inhaled pollutants may impair mitochondrial redox handling and the malate–aspartate shuttle, propagating into the observed glutamate, glutathione, ascorbate, purine/pyrimidine, and fatty-acid-oxidation signals. Carnitine shuttle and BCAA degradation enrichment specific to the dementia/CIND subgroup is consistent with mitochondrial dysfunction as a vulnerability pathway for cognitive decline.
 
-**Population-specific metabolomic responses differ between cognitively impaired and healthy subgroups.** The moderate correlation of effect sizes between the full cohort and the dementia/CIND subgroup (R = 0.60--0.67), compared to the high correlation with the no dementia/CIND subgroup (R = 0.98--0.99), suggests that individuals who develop cognitive impairment may have a distinct metabolomic response to air toxicant exposure. The enrichment of energy metabolism and lipid metabolism pathways specifically in the dementia/CIND subgroup supports the hypothesis that mitochondrial dysfunction and lipid dysregulation may represent vulnerability factors or mediating pathways linking air pollution to cognitive decline.
+The cross-cohort meta-analysis against WHICAP provides complementary evidence: median I² of 0 across strata and a lower heterogeneity profile among meta-significant hits indicate that the FE-pooled signals reflect cross-cohort agreement rather than dominance by either cohort, despite the exposure mismatch between SALSA's mixture composites and WHICAP's PM~2.5~. The convergence is encouraging given the two cohorts differ in geography, ancestry composition, and analytic batch. With only two studies, meta-analytic estimates should be interpreted as a precision-weighted concordance summary rather than a generalizable pooled effect; this limitation will be revisited as additional cohort summaries become available.
 
-**Findings are robust to covariate adjustment.** The high correlation between primary and sensitivity analysis effect sizes (R = 0.83--0.98) and the consistency of pathway enrichment patterns across covariate models suggest that the observed metabolomic associations are not driven by confounding from metabolic risk factors such as BMI, diabetes, or lifestyle factors. The emergence of additional lipid metabolism pathways in the sensitivity analysis, particularly in the dementia/CIND subgroup, warrants further investigation.
-
-**Mixture modeling approaches provide complementary insights.** While WQS and QGcomp composites identified largely overlapping pathway enrichments, some differences were observed, particularly in the magnitude of enrichment factors and the specific pathways reaching significance. This complementary approach strengthens confidence in the biological relevance of the identified pathways.
-
-These findings contribute to the growing evidence that air pollution exposure disrupts fundamental metabolic processes, with potential implications for understanding the biological pathways linking environmental exposures to cognitive decline and dementia in aging Latino populations.
+Strengths of this study include the large sample size, the 100-m LUR exposure resolution, 5-year moving-average exposure windows, and the use of two complementary mixture-modeling approaches with parallel covariate sensitivity sets. Limitations include the modest dementia/CIND subgroup size (n = 141), the ~30% annotation rate typical of untargeted HRM, the predominance of Level 3 tentative annotations among top hits, and the single-cohort single-region nature of SALSA. Future work integrating MS/MS validation of top features and per-sample meta-analysis with WHICAP (rather than summary-statistic pooling) will strengthen mechanistic interpretation.
