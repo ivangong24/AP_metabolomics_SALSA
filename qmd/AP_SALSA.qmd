@@ -29,15 +29,15 @@ knitr::opts_chunk$set(warning = FALSE, message=FALSE)
 
 # Introduction
 
-Long-term exposure to ambient air pollution has been linked to cognitive decline and dementia, yet the metabolic mechanisms underlying these associations remain largely unexplored, particularly in older Latino populations. High-resolution metabolomics (HRM) offers a hypothesis-free strategy to detect exposure-related perturbations across interconnected metabolic pathways. The Sacramento Area Latino Study on Aging (SALSA) provides a well-characterized prospective cohort of older Mexican Americans with long-term residential air-toxicant exposure estimates and serum specimens profiled on two complementary LC-HRMS platforms.
+Long-term exposure to ambient air pollution has been linked to cognitive decline and dementia, yet the metabolic mechanisms underlying these associations remain largely unexplored, particularly in older Latino populations. High-resolution metabolomics (HRM) offers a hypothesis-free strategy to detect exposure-related perturbations across interconnected metabolic pathways. The Sacramento Area Latino Study on Aging (SALSA) provides a well-characterized prospective cohort of older Mexican Americans with long-term residential air-toxicant exposure estimates and plasma specimens profiled on two complementary LC-HRMS platforms.
 
-This report summarizes a metabolome-wide association study (MWAS) of residential air-toxicant exposure in SALSA, conducted across individual pollutants and three mixture composites (WQS, QGcomp, and QGcomp Cox), with downstream pathway enrichment and a cross-cohort feature-level meta-analysis against the Washington Heights / Inwood Columbia Aging Project (WHICAP).
+This report summarizes a metabolome-wide association study (MWAS) of residential air-toxicant exposure in SALSA, conducted across three mixture composites (WQS, QGcomp, and QGcomp Cox), with downstream pathway enrichment and a cross-cohort feature-level meta-analysis against the Washington Heights / Inwood Columbia Aging Project (WHICAP).
 
 # Methods
 
 ## Study population
 
-Of the 1,789 SALSA participants enrolled between 1998 and 1999, 952 had serum metabolomics profiled and form the cross-sectional cohort. For time-to-event analyses, 42 participants with baseline dementia or cognitive impairment but not demented (CIND) and 2 without follow-up were excluded, yielding 908. Analyses were additionally stratified by incident dementia/CIND status.
+Of the 1,789 SALSA participants enrolled between 1998 and 1999, 952 had plasma metabolomics profiled and form the cross-sectional cohort. For time-to-event analyses, 42 participants with baseline dementia or cognitive impairment but not demented (CIND) and 2 without follow-up were excluded, yielding 908. Analyses were additionally stratified by incident dementia/CIND status.
 
 ## Air toxicant exposure assessment
 
@@ -77,7 +77,9 @@ Models were run across each platform (C18, HILIC), framework (cross-sectional, t
 
 ### Pathway enrichment
 
-Pathway-level enrichment was assessed jointly on combined C18 + HILIC feature lists with two independent permutation-based approaches: **Mummichog** (*MetaboAnalystR*, hsa_mfn, mixed-ionization, 10 ppm, p < 0.1, 100 permutations, ≥3 hits) and **metapone** (HMDB-derived pathways, 200 permutations, 10 ppm, p < 0.05). Pathways reaching permutation p < 0.05 in either approach were considered enriched.
+Pathway-level enrichment was assessed jointly on combined C18 + HILIC feature lists with two independent permutation-based approaches: **Mummichog** (*MetaboAnalystR*, hsa_mfn, mixed-ionization, 10 ppm, p < 0.1, 100 permutations, ≥3 hits) and **metapone** (HMDB-derived pathways, 200 permutations, 10 ppm, p < 0.05). 
+
+<!-- Pathways reaching permutation p < 0.05 in either approach were considered enriched. -->
 
 ### Cross-cohort meta-analysis with WHICAP
 

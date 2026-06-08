@@ -667,6 +667,9 @@ message("Combined sheets written to tables/meta_analysis/",
 load(here::here("data", "metabolomics", "annotation",
          "annotation_cleaned_wide.RData"))
 
+load(here::here("data", "metabolomics",
+                "alignment", "meta_mixture_salsa_whicap.RData"))
+
 annot_wide_by_platform <- list(c18 = annotation_c18_wide,
                                hil = annotation_hilic_wide)
 
@@ -980,7 +983,7 @@ pacman::p_load(ggrepel, ggpubr, patchwork)
 # / p_fe / fdr_fe, "re" → estimate_re / p_re / fdr_re.
 create_meta_volcano <- function(meta_c18, meta_hil, exposure,
                                 model = c("fe", "re"),
-                                fdr_threshold = 0.05, n_labels = 10){
+                                fdr_threshold = 0.05, n_labels = 6){
   model    <- match.arg(model)
   est_col  <- paste0("estimate_", model)
   p_col    <- paste0("p_",  model)
@@ -1011,7 +1014,7 @@ create_meta_volcano <- function(meta_c18, meta_hil, exposure,
   if (is.null(plot_data) || nrow(plot_data) == 0) return(NULL)
 
   top_labs <- plot_data |>
-    dplyr::filter(!is.na(compound), p_plot < 0.05) |>
+    dplyr::filter(!is.na(compound), fdr_plot < fdr_threshold) |>
     dplyr::arrange(p_plot) |>
     dplyr::group_by(platform) |>
     dplyr::slice_head(n = n_labels) |>
@@ -1021,21 +1024,25 @@ create_meta_volcano <- function(meta_c18, meta_hil, exposure,
 
   ggplot(plot_data, aes(x = estimate_plot, y = neg_log10_p)) +
     geom_point(data = ~ dplyr::filter(.x, significant == "NS"),
-               color = "grey70", alpha = 0.5, size = 1.4) +
+               aes(shape = platform),
+               color = "grey70", alpha = 0.5, size = 1.6) +
     geom_point(data = ~ dplyr::filter(.x, significant != "NS"),
-               aes(color = significant), alpha = 0.7, size = 2.2) +
+               aes(color = significant, shape = platform),
+               alpha = 0.7, size = 2.4) +
     ggrepel::geom_label_repel(
       data = top_labs,
       aes(label = compound_first),
-      size = 3.6, max.overlaps = 20,
-      box.padding = 0.4, segment.color = "grey50") +
+      size = 3.6, max.overlaps = Inf, force = 2,
+      box.padding = 0.4, segment.color = "grey50",
+      inherit.aes = TRUE, show.legend = FALSE) +
     scale_color_manual(values = c("FDR < 0.05" = "#BE3F42",
                                   "P < 0.05"   = "#DE9960"),
                        name = "Significance", drop = FALSE) +
+    scale_shape_manual(values = c("C18/neg−" = 16, "HILIC/pos+" = 17),
+                       name = "Column") +
     geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
     geom_hline(yintercept = -log10(0.05), linetype = "dashed",
                color = "grey40") +
-    facet_wrap(~ platform, scales = "free") +
     labs(title = gsub("comp_|exp_", "",
                       paste0("Meta-analysis (", model_lab, "): ", exposure)),
          x = paste0("Pooled effect estimate (", toupper(model), ")"),
@@ -1044,7 +1051,13 @@ create_meta_volcano <- function(meta_c18, meta_hil, exposure,
     theme(plot.title = element_text(face = "bold", size = 15, hjust = .5),
           axis.title = element_text(face = "bold", size = 12),
           strip.text = element_text(face = "bold", size = 12),
-          legend.position = "right")
+          legend.position   = "bottom",
+          legend.box        = "horizontal",
+          legend.background = element_rect(colour = "grey80", fill = "white",
+                                           linewidth = 0.5),
+          legend.margin     = margin(4, 6, 4, 6),
+          legend.title      = element_text(face = "bold", size = 11),
+          legend.text       = element_text(size = 10))
 }
 
 # Scatter plot: SALSA estimate vs WHICAP estimate at meta-significant
@@ -1353,6 +1366,61 @@ purrr::walk(populations, function(population){
         plot = combined_manhattan,
         width = 14, height = 6 * length(manhattan_rows), dpi = 300)
     }
+
+    # Combined volcano + scatter panel — 3 rows (one per mixture),
+    # each row pairs the FE volcano (left, faceted by platform) with
+    # the per-mixture concordance scatter (right, both platforms via
+    # shape). Mirrors the layout of `create_combined_panel` in
+    # scripts/7-visualization.R.
+    combo_rows <- purrr::imap(meta_inputs, function(mi, i){
+      p_v <- create_meta_volcano(mi$c18, mi$hil, exposure = mi$label,
+                                  model = "fe")
+      p_s <- create_cohort_scatter(list(list(c18 = mi$c18, hil = mi$hil,
+                                              label = mi$label)))
+      if (is.null(p_v) || is.null(p_s)) return(NULL)
+      tag_v <- LETTERS[2 * i - 1]
+      tag_s <- LETTERS[2 * i]
+      p_v <- p_v + labs(title = NULL, tag = tag_v)
+      p_s <- p_s + labs(title = NULL, tag = tag_s) +
+        guides(shape = "none") +
+        theme(strip.text = element_blank(),
+              strip.background = element_blank())
+      p_v | p_s
+    }) |> purrr::compact()
+
+    if (length(combo_rows) > 0){
+      combo_labels <- purrr::map(meta_inputs, function(mi){
+        patchwork::wrap_elements(
+          grid::textGrob(mi$label, x = 0.02, hjust = 0,
+                         gp = grid::gpar(fontface = "bold", fontsize = 13)))
+      })
+
+      combo_interleaved <- purrr::map2(combo_labels, combo_rows,
+                                       ~ list(.x, .y)) |>
+        purrr::flatten()
+
+      combined_panel <- purrr::reduce(combo_interleaved, `/`) +
+        patchwork::plot_layout(
+          heights = rep(c(0.03, 1), length(combo_rows)),
+          guides  = "collect") &
+        theme(legend.position   = "bottom",
+              legend.box        = "horizontal",
+              legend.background = element_rect(colour = "grey80",
+                                               fill = "white",
+                                               linewidth = 0.5),
+              legend.margin     = margin(4, 6, 4, 6),
+              legend.title      = element_text(face = "bold", size = 11),
+              legend.text       = element_text(size = 10),
+              legend.key.size   = unit(0.5, "cm"),
+              plot.tag          = element_text(face = "bold", size = 13))
+
+      ggplot2::ggsave(
+        filename = file.path(fig_dir,
+          glue::glue("combined_meta_panel_",
+                     "{population}_{covar_name}.png")),
+        plot = combined_panel,
+        width = 18, height = 6 * length(combo_rows), dpi = 300)
+    }
   })
 })
 
@@ -1543,17 +1611,9 @@ create_meta_pathway_bubble_heatmap <- function(data) {
     element_rect(fill = scales::alpha(col, 0.3), colour = "grey80")
   })
 
-  pop_levels <- c("all", "no demcind", "demcind")
-  pop_pal    <- setNames(c("#436C85", "#B73F42", "#DE9960"), pop_levels)
-  pop_levels_present <- intersect(pop_levels, levels(plot_data$population))
-  pop_strip_colors <- lapply(pop_pal[pop_levels_present], function(col) {
-    element_rect(fill = scales::alpha(col, 0.7), colour = "grey80")
-  })
-
   all_combos <- tidyr::expand_grid(
     pathway_name   = levels(pathway_sorted$pathway_name),
-    population     = factor(pop_levels_present, levels = pop_levels),
-    exposure_short = factor(exposure_levels,   levels = exposure_levels)) |>
+    exposure_short = factor(exposure_levels, levels = exposure_levels)) |>
     dplyr::mutate(pathway_name = factor(
       pathway_name, levels = levels(pathway_sorted$pathway_name))) |>
     dplyr::left_join(
@@ -1563,9 +1623,9 @@ create_meta_pathway_bubble_heatmap <- function(data) {
   bubble_data <- all_combos |>
     dplyr::left_join(
       plot_data |>
-        dplyr::select(pathway_name, population, exposure_short,
+        dplyr::select(pathway_name, exposure_short,
                       p_value, neg_log10_p, enrichment_factor),
-      by = c("pathway_name", "population", "exposure_short"))
+      by = c("pathway_name", "exposure_short"))
 
   shade_df <- pathway_sorted |>
     dplyr::arrange(category, dplyr::desc(as.integer(pathway_name))) |>
@@ -1607,13 +1667,10 @@ create_meta_pathway_bubble_heatmap <- function(data) {
                           override.aes = list(fill = "#F46D43",
                                               alpha = 0.8))) +
     ggh4x::facet_grid2(
-      category ~ population,
+      category ~ .,
       scales = "free_y", space = "free_y",
       strip  = ggh4x::strip_themed(
-        background_y = strip_colors,
-        background_x = pop_strip_colors,
-        text_x = lapply(seq_along(pop_strip_colors), function(i)
-          element_text(face = "bold", size = 14, color = "white")))) +
+        background_y = strip_colors)) +
     labs(y = NULL, x = NULL, title = NULL) +
     theme_minimal(base_size = 14) +
     theme(
@@ -1651,14 +1708,20 @@ dir.create(mum_meta_fig_dir, showWarnings = FALSE, recursive = TRUE)
 
 c("covar", "covar_sen") |>
   purrr::walk(function(cs){
-    d <- mum_meta_sig |> dplyr::filter(covar_set == cs)
+    # Restrict the meta-analysis pathway plot to the "all" population.
+    # Subgroup meta-pools become WHICAP-dominated as SALSA SEs grow with
+    # smaller n (e.g., demcind n=141 → SALSA SE ~2.6× larger), so the
+    # cognitive-subgroup pathway columns reflect WHICAP-PM2.5 biology
+    # rather than SALSA-specific signal and should not be reported.
+    d <- mum_meta_sig |>
+      dplyr::filter(covar_set == cs, population == "all")
     p <- create_meta_pathway_bubble_heatmap(d)
     if (is.null(p)) return(invisible())
     ggsave(
       filename = file.path(mum_meta_fig_dir,
                            glue::glue("mummichog_meta_bubble_heatmap_{cs}.png")),
       plot   = p,
-      width  = 16,
+      width  = 9,
       height = max(8, dplyr::n_distinct(d$pathway_name) * 0.35),
       dpi    = 300)
   })

@@ -1135,6 +1135,262 @@ study_names |>
   })
 
 
+# Mixture × toxicant correlation visualization ------------------------------
+# Two paired figures per covariate set:
+#   (1) Standalone 3x3 bubble heatmap of mixture-mixture Pearson correlations
+#       (WQS × QGcomp × QGcomp Cox), styled like scripts/3-clean_data.R's
+#       `tbl_composite_cor` plot — lower triangle = bubble (fill +
+#       size = correlation), upper triangle = numeric labels.
+#   (2) Mantel-style network of pairwise toxicant correlations on the right,
+#       with the three mixture composites as anchor nodes on the left;
+#       curve thickness = |Pearson r| between (mixture, toxicant), curve
+#       color = p-value tier. Layout via `linkET::qcorrplot()` +
+#       `geom_couple()`. The 3x3 mixture-mixture panel is also embedded
+#       as an inset in the upper-left of the network plot so all three
+#       relationships (toxicant↔toxicant, mixture↔toxicant, mixture↔mixture)
+#       are visible in one figure.
+#
+# `comp_wqs_all` and `comp_qgcomp_all` live in the `total` slot;
+# `comp_qgcomp_cox_all` lives in `cox` (excludes 42 baseline dementia/CIND
+# cases + 2 without follow-up). Joined on `(rand_id, blood_date)`, so
+# pairwise correlations involving the cox composite use only the
+# cox-eligible subset.
+
+pacman::p_load(ggthemes, patchwork)
+
+if (!requireNamespace("linkET", quietly = TRUE)) {
+  if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+  remotes::install_github("Hy4m/linkET")
+}
+library(linkET)
+
+tox_label_lookup <- c(
+  exp_benzene_iqr   = "Benzene",
+  exp_butadiene_iqr = "1,3-Butadiene",
+  exp_chromium_iqr  = "Chromium",
+  exp_nickel_iqr    = "Nickel",
+  exp_lead_iqr      = "Lead",
+  exp_zinc_iqr      = "Zinc",
+  exp_nox_iqr       = "NOx",
+  `exp_pm2.5_iqr`   = "PM2.5",
+  exp_no2_iqr       = "NO2"
+)
+
+mix_label_lookup <- c(comp_wqs_all        = "WQS",
+                      comp_qgcomp_all     = "QGcomp",
+                      comp_qgcomp_cox_all = "QGcomp (Cox)")
+
+cor_one <- function(x, y){
+  tst <- suppressWarnings(stats::cor.test(x, y, method = "pearson",
+                                          use = "pairwise.complete.obs"))
+  tibble::tibble(r = unname(tst$estimate), p = tst$p.value)
+}
+
+# Build a bubble-heatmap of the 3x3 mixture correlations from `df`.
+# `compact` strips the title/axis labels/legend so the same plot can be
+# reused as a small inset inside the network figure.
+build_mix_bubble <- function(df, compact = FALSE) {
+  cor_levels <- unname(mix_label_lookup)
+  cor_long <- df |>
+    dplyr::select(dplyr::all_of(names(mix_label_lookup))) |>
+    dplyr::rename_with(~ unname(mix_label_lookup[.x])) |>
+    cor(use = "pairwise.complete.obs") |>
+    tibble::as_tibble(rownames = "var_x") |>
+    tidyr::pivot_longer(-var_x, names_to = "var_y",
+                        values_to = "correlation") |>
+    dplyr::mutate(var_x = factor(var_x, levels = cor_levels),
+                  var_y = factor(var_y, levels = cor_levels))
+
+  bubble_size <- if (compact) 13 else 22
+  text_size   <- if (compact) 4   else 6
+  base_size   <- if (compact) 12  else 16
+
+  bubble_data <- cor_long |>
+    dplyr::filter(as.integer(var_x) > as.integer(var_y))
+  text_data   <- cor_long |>
+    dplyr::filter(as.integer(var_y) > as.integer(var_x))
+
+  p <- ggplot(cor_long, aes(var_x, var_y)) +
+    geom_tile(fill = "white", col = "grey85") +
+    geom_point(data = bubble_data,
+               aes(fill = correlation, size = abs(correlation)),
+               color = "black", shape = 21, stroke = 0.4) +
+    geom_text(data = text_data,
+              aes(label = sprintf("%.2f", correlation)),
+              color = "grey15", size = text_size, fontface = "bold") +
+    scale_fill_gradient2(low      = "#436C85",
+                         mid      = "white",
+                         high     = "#B73F42",
+                         midpoint = 0,
+                         limits   = c(-1, 1),
+                         breaks   = seq(-1, 1, 0.5),
+                         guide    = if (compact) "none" else "colourbar") +
+    scale_size_area(limits = c(0, 1), max_size = bubble_size) +
+    coord_cartesian(expand = FALSE) +
+    labs(x = NULL, y = NULL, fill = "Correlation") +
+    theme_minimal(base_size = base_size)
+
+  if (compact) {
+    p +
+      labs(title = "Composite-composite r") +
+      guides(size = "none") +
+      theme(plot.title       = element_text(face = "bold", size = 11,
+                                            hjust = 0.5,
+                                            margin = margin(b = 2)),
+            axis.text.y      = element_text(size = 9, color = "grey25"),
+            axis.text.x      = element_text(size = 9, color = "grey25",
+                                            vjust = 1, hjust = 1,
+                                            angle = 30),
+            panel.grid       = element_blank(),
+            plot.background  = element_rect(fill = "white",
+                                            colour = "grey60",
+                                            linewidth = 0.5),
+            plot.margin      = margin(8, 10, 8, 10))
+  } else {
+    p +
+      labs(title = NULL) +
+      theme(legend.position = "top",
+            legend.title    = element_text(face = "bold", size = 14),
+            legend.text     = element_text(size = 13),
+            axis.text.y     = element_text(size = 14, color = "grey20"),
+            axis.text.x     = element_text(size = 14, color = "grey20",
+                                           vjust = 1, hjust = 1,
+                                           angle = 30),
+            panel.grid      = element_blank()) +
+      guides(fill = guide_colorbar(barwidth = unit(9, "cm"),
+                                   barheight = unit(0.5, "cm"),
+                                   title.position = "top",
+                                   title.hjust = 0.5,
+                                   frame.colour = "grey40",
+                                   ticks.colour = "grey40"),
+             size = "none")
+  }
+}
+
+out_dir <- here::here("figures", "mwas")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+covar_names |>
+  purrr::walk(function(cov){
+    df_total <- combined_data_list_new[["total"]][["all"]][[cov]] |>
+      dplyr::select(rand_id, blood_date,
+                    dplyr::any_of(names(tox_label_lookup)),
+                    dplyr::any_of(c("comp_wqs_all", "comp_qgcomp_all")))
+    df_cox <- combined_data_list_new[["cox"]][["all"]][[cov]] |>
+      dplyr::select(rand_id, blood_date,
+                    dplyr::any_of("comp_qgcomp_cox_all"))
+    df <- dplyr::full_join(df_total, df_cox,
+                           by = c("rand_id", "blood_date"))
+
+    # --- (1) Standalone 3x3 mixture-mixture bubble heatmap -----------------
+    p_mix_cor <- build_mix_bubble(df, compact = FALSE) +
+      labs(title = paste0("Mixture composite correlation (", cov, ")")) +
+      theme(plot.title = element_text(face = "bold", size = 17,
+                                      hjust = 0.5,
+                                      margin = margin(b = 8)))
+
+    ggsave(filename = file.path(out_dir,
+             glue::glue("mixture_composite_correlation_{cov}.png")),
+           plot = p_mix_cor,
+           width = 8, height = 7.5, dpi = 300, bg = "white")
+
+    # --- (2) Mantel-style toxicant network with embedded mixture inset -----
+    tox_cols <- df |> dplyr::select(dplyr::any_of(names(tox_label_lookup))) |>
+      colnames()
+
+    tox_renamed <- df |>
+      dplyr::select(dplyr::all_of(tox_cols)) |>
+      dplyr::rename_with(~ unname(tox_label_lookup[.x]))
+
+    mix_tox_cor <- tidyr::expand_grid(
+        spec_orig = names(mix_label_lookup),
+        env_orig  = tox_cols) |>
+      dplyr::mutate(stats = purrr::map2(spec_orig, env_orig,
+                                        ~ cor_one(df[[.x]], df[[.y]]))) |>
+      tidyr::unnest(stats) |>
+      dplyr::transmute(
+        spec = factor(unname(mix_label_lookup[spec_orig]),
+                      levels = unname(mix_label_lookup)),
+        env  = factor(unname(tox_label_lookup[env_orig]),
+                      levels = unname(tox_label_lookup[tox_cols])),
+        r, p,
+        rd = cut(abs(r), breaks = c(-Inf, 0.2, 0.4, 0.6, Inf),
+                 labels = c("< 0.2", "0.2 - 0.4",
+                            "0.4 - 0.6", "> 0.6"),
+                 right = TRUE),
+        pd = cut(p, breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+                 labels = c("< 0.001", "0.001 - 0.01",
+                            "0.01 - 0.05", "> 0.05"),
+                 right = TRUE))
+
+    p_network <- linkET::qcorrplot(linkET::correlate(tox_renamed),
+                                   type = "upper", diag = FALSE) +
+      linkET::geom_square(colour = "grey85", size = 0.3) +
+      linkET::geom_couple(aes(colour = pd, size = rd),
+                          data = mix_tox_cor,
+                          curvature = linkET::nice_curvature(),
+                          alpha = 0.85) +
+      scale_fill_gradient2(
+        low      = "#436C85",
+        mid      = "white",
+        high     = "#B73F42",
+        midpoint = 0,
+        limits   = c(-1, 1),
+        breaks   = seq(-1, 1, 0.5),
+        name     = "Pairwise r\n(toxicants)") +
+      scale_size_manual(values = c("< 0.2"     = 0.4,
+                                   "0.2 - 0.4" = 1.2,
+                                   "0.4 - 0.6" = 2.2,
+                                   "> 0.6"     = 3.5),
+                        name = "Composite |r|\n(curve width)") +
+      scale_colour_manual(values = c("< 0.001"      = "#DE9960",
+                                     "0.001 - 0.01" = "#68889D",
+                                     "0.01 - 0.05"  = "#436C85",
+                                     "> 0.05"       = "grey"),
+                          name = "P-value\n(curve colour)") +
+      guides(
+        colour = guide_legend(order = 1, ncol = 1,
+                              override.aes = list(linewidth = 2.5)),
+        size   = guide_legend(order = 2, ncol = 1,
+                              override.aes = list(colour = "grey35")),
+        fill   = guide_colorbar(order = 3,
+                                barwidth = unit(0.7, "cm"),
+                                barheight = unit(4.5, "cm"),
+                                frame.colour = "grey40",
+                                ticks.colour = "grey40")) +
+      # labs(title = paste0("Air-toxicant correlation network (",
+      #                     cov, ")"),
+      #      subtitle = "Mixture composites (left) shown with their per-toxicant correlations") +
+      theme(plot.title     = element_text(face = "bold", size = 18,
+                                          hjust = 0.5,
+                                          margin = margin(b = 2)),
+            plot.subtitle  = element_text(size = 12, hjust = 0.5,
+                                          color = "grey30",
+                                          margin = margin(b = 12)),
+            legend.title   = element_text(face = "bold", size = 12),
+            legend.text    = element_text(size = 11),
+            legend.key.size = unit(0.6, "cm"),
+            legend.box.spacing = unit(0.4, "cm"),
+            plot.margin    = margin(15, 15, 15, 15))
+
+    # Embed the compact 3x3 mixture correlation in the upper-left of the
+    # network plot. The space above the anchor labels is sparse in the
+    # default linkET layout, so the inset doesn't collide with curves.
+    p_mix_inset <- build_mix_bubble(df, compact = TRUE)
+    p_integrated <- p_network +
+      patchwork::inset_element(p_mix_inset,
+                               left   = 0.01, bottom = 0.02,
+                               right  =  0.24, top    = 0.30,
+                               align_to = "full",
+                               clip = FALSE)
+
+    ggsave(filename = file.path(out_dir,
+             glue::glue("mixture_toxicant_network_{cov}.png")),
+           plot = p_integrated,
+           width = 13, height = 9, dpi = 300, bg = "white")
+  })
+
+
 # =============================================================================
 # SECTION 6: MANHATTAN-STYLE PLOT
 # =============================================================================

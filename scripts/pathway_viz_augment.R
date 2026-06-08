@@ -402,6 +402,175 @@ if (!is.null(p_bubble_sen)) {
   )
 }
 
+# "All"-only bubble heatmap variant (no population facet) — same Option A
+# layout but restricted to the full-cohort stratum, with population strip
+# and column-faceting dropped so the figure reads as a single category ×
+# exposure bubble heatmap.
+create_pathway_bubble_heatmap_all <- function(data, covar_label) {
+
+  if (nrow(data) == 0) return(NULL)
+
+  pathway_summary <- data |>
+    dplyr::group_by(pathway_name, category) |>
+    dplyr::summarise(
+      min_p       = min(p_value, na.rm = TRUE),
+      total_score = sum(-log10(p_value), na.rm = TRUE),
+      .groups = "drop")
+
+  category_order <- pathway_summary |>
+    dplyr::group_by(category) |>
+    dplyr::summarise(cat_min_p = min(min_p),
+                     cat_total = sum(total_score),
+                     .groups = "drop") |>
+    dplyr::arrange(cat_min_p, dplyr::desc(cat_total)) |>
+    dplyr::pull(category)
+
+  pathway_sorted <- pathway_summary |>
+    dplyr::mutate(category = factor(category, levels = category_order)) |>
+    dplyr::arrange(category, dplyr::desc(min_p), total_score) |>
+    dplyr::mutate(pathway_name = fct_inorder(pathway_name))
+
+  exposure_levels <- c("WQS", "QGcomp", "QGcomp-Cox")
+  exposure_display_labels <- c("WQS"        = "WQS",
+                               "QGcomp"     = "QGcomp",
+                               "QGcomp-Cox" = "QGcomp")
+
+  plot_data <- data |>
+    dplyr::mutate(
+      category       = factor(category, levels = category_order),
+      pathway_name   = factor(pathway_name,
+                              levels = levels(pathway_sorted$pathway_name)),
+      neg_log10_p    = -log10(p_value),
+      exposure_short = factor(exposure_short, levels = exposure_levels))
+
+  cats <- category_order
+  pal  <- ggthemes::tableau_color_pal("Tableau 10")(length(cats))
+  names(pal) <- cats
+  strip_colors <- lapply(pal[cats], function(col) {
+    element_rect(fill = alpha(col, 0.3), colour = "grey80")
+  })
+
+  all_combos <- tidyr::expand_grid(
+    pathway_name   = levels(pathway_sorted$pathway_name),
+    exposure_short = factor(exposure_levels, levels = exposure_levels)) |>
+    dplyr::mutate(pathway_name = factor(
+      pathway_name, levels = levels(pathway_sorted$pathway_name))) |>
+    dplyr::left_join(
+      pathway_sorted |> dplyr::select(pathway_name, category),
+      by = "pathway_name")
+
+  bubble_data <- all_combos |>
+    dplyr::left_join(
+      plot_data |>
+        dplyr::select(pathway_name, exposure_short,
+                      p_value, neg_log10_p, enrichment_factor),
+      by = c("pathway_name", "exposure_short"))
+
+  shade_df <- pathway_sorted |>
+    dplyr::arrange(category, dplyr::desc(as.integer(pathway_name))) |>
+    dplyr::mutate(visual_idx = dplyr::row_number(),
+                  shade = ifelse(visual_idx %% 2 == 0, "even", "odd")) |>
+    dplyr::select(pathway_name, shade)
+
+  shade_data <- bubble_data |>
+    dplyr::left_join(shade_df, by = "pathway_name")
+
+  shade_data |>
+    ggplot(aes(x = exposure_short, y = pathway_name)) +
+    geom_tile(aes(fill = shade), width = 1, height = 1, alpha = 0.4,
+              show.legend = FALSE) +
+    scale_fill_manual(values = c("even" = "grey93", "odd" = "white"),
+                      guide = "none") +
+    ggnewscale::new_scale_fill() +
+    geom_point(
+      data = . %>% filter(!is.na(p_value)),
+      aes(size = enrichment_factor, fill = neg_log10_p),
+      shape = 21, color = "grey20", stroke = 0.4, alpha = 0.9) +
+    scale_fill_gradientn(
+      colours = c("#FFF7BC", "#FEC44F", "#F46D43", "#D73027", "#A50026"),
+      name = expression(-log[10](italic(p))),
+      limits = c(-log10(0.1), NA),
+      na.value = "grey85") +
+    scale_size_continuous(range = c(2, 9), name = "Enrichment factor") +
+    scale_x_discrete(
+      labels = exposure_display_labels,
+      guide = legendry::guide_axis_nested(
+        key = legendry::key_range_manual(
+          start = c("WQS", "QGcomp-Cox"),
+          end   = c("QGcomp", "QGcomp-Cox"),
+          name  = c("Cross-sectional", "Time-to-event")))) +
+    guides(
+      fill = guide_colorbar(
+        barwidth = 10, barheight = 0.8,
+        title.position = "top", title.hjust = 0.5,
+        frame.colour = "grey40", ticks.colour = "grey40"),
+      size = guide_legend(
+        title.position = "top", title.hjust = 0.5,
+        override.aes = list(fill = "#F46D43", alpha = 0.8))) +
+    ggh4x::facet_grid2(
+      category ~ .,
+      scales = "free_y", space = "free_y",
+      strip = ggh4x::strip_themed(
+        background_y = strip_colors)) +
+    labs(y = NULL, x = NULL, title = NULL) +
+    theme_minimal(base_size = 14) +
+    theme(
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      legend.margin = margin(t = 8),
+      legend.spacing.x = unit(1, "cm"),
+      legend.title = element_text(face = "bold", size = 13),
+      legend.text = element_text(size = 12),
+      axis.line = element_blank(),
+      panel.border = element_rect(colour = "grey80", fill = NA,
+                                  linewidth = 0.4),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank(),
+      axis.text.y = element_text(size = 13, color = "grey20"),
+      axis.text.x = ggtext::element_textbox_simple(
+        face = "bold", size = 13, color = "grey20",
+        halign = 0.5,
+        padding = margin(3, 6, 3, 6),
+        margin = margin(t = 3, b = 3),
+        box.color = "grey40",
+        linewidth = 0.5,
+        linetype = 1,
+        fill = "grey95",
+        r = unit(2, "pt")),
+      strip.text.y = element_text(face = "bold.italic", size = 13,
+                                  angle = 0, color = "grey20"),
+      panel.spacing = unit(0.3, "lines"),
+      plot.margin = margin(10, 15, 10, 10))
+}
+
+covar_data_all <- covar_data |> dplyr::filter(population == "all")
+p_bubble_all <- create_pathway_bubble_heatmap_all(covar_data_all,
+                                                   "Primary analysis (all)")
+if (!is.null(p_bubble_all)) {
+  ggsave(
+    filename = here::here("figures", "test_pathway",
+                          "option_A_bubble_heatmap_all.png"),
+    plot = p_bubble_all,
+    width = 9,
+    height = max(8, dplyr::n_distinct(covar_data_all$pathway_name) * 0.35),
+    dpi = 300
+  )
+}
+
+covar_sen_data_all <- covar_sen_data |> dplyr::filter(population == "all")
+p_bubble_sen_all <- create_pathway_bubble_heatmap_all(
+  covar_sen_data_all, "Sensitivity analysis (all)")
+if (!is.null(p_bubble_sen_all)) {
+  ggsave(
+    filename = here::here("figures", "test_pathway",
+                          "option_A_bubble_heatmap_sen_all.png"),
+    plot = p_bubble_sen_all,
+    width = 9,
+    height = max(8, dplyr::n_distinct(covar_sen_data_all$pathway_name) * 0.35),
+    dpi = 300
+  )
+}
+
 
 # =============================================================================
 # OPTION B: GROUPED BAR CHART OF -log10(p)
