@@ -12,9 +12,15 @@
 ## Notes:
 ##   - Output: tables/Supplement tables_composite_meta.xlsx
 ##       Sheets:
-##         Table S1–S3: SALSA full / no demcind / demcind, primary covariates
-##         Table S4–S6: SALSA full / no demcind / demcind, sensitivity covariates
-##         Table S7–S8: Meta full cohort, primary / sensitivity covariates
+##         Table S1–S3:   SALSA full / no demcind / demcind, primary covariates
+##         Table S4–S6:   SALSA full / no demcind / demcind, sensitivity covariates
+##         Table S7–S8:   Meta full cohort, primary / sensitivity covariates
+##         Table S9–S10:  Mummichog enriched pathways (P(Fisher) < 0.05),
+##                        main analysis, primary / sensitivity covariates
+##         Table S11–S12: Mummichog enriched pathways (P(Fisher) < 0.05),
+##                        meta-analysis, primary / sensitivity covariates
+##         Table S13–S14: Feature-to-pathway mapping for enriched pathways,
+##                        primary / sensitivity covariates
 ##   - SALSA filter: composite exposures only
 ##                   (comp_wqs_all, comp_qgcomp_all for cross-sectional;
 ##                    comp_qgcomp_cox_all for time-to-event)
@@ -22,11 +28,13 @@
 ##                   Unannotated features ARE retained.
 ##   - Meta filter: same composite exposures, "all" population only,
 ##                  p_fe < 0.05.
+##   - S1–S8 exposure column merges the previous (exposure, analysis) pair
+##     into a single label: WQS / QGcomp / QGcomp (COX).
 ##   - Visual format mirrors tables/Supplement tables_composite.xlsx:
 ##     row 1 holds a merged title; row 2 is the column header.
 ## ---------------------------
 
-pacman::p_load(tidyverse, here, openxlsx)
+pacman::p_load(tidyverse, here, openxlsx, KEGGREST)
 
 load(here::here("data", "metabolomics", "results", "mwas_results_all.RData"))
 load(here::here("data", "metabolomics", "annotation",
@@ -45,6 +53,14 @@ analysis_label_lookup <- c(
   comp_wqs_all        = "Cross-sectional",
   comp_qgcomp_all     = "Cross-sectional",
   comp_qgcomp_cox_all = "Time-to-event"
+)
+
+# Single-label combining the exposure + analysis columns. Used both for the
+# merged "exposure" column in S1-S8 and as the row label in the pathway sheets.
+exposure_label_lookup <- c(
+  comp_wqs_all        = "WQS",
+  comp_qgcomp_all     = "QGcomp",
+  comp_qgcomp_cox_all = "QGcomp (COX)"
 )
 
 # Parse m/z and RT from the "mz_rt_<m/z>_<rt>" feature ID.
@@ -68,8 +84,7 @@ build_salsa_tab <- function(population, covar) {
           if (is.null(d)) return(NULL)
           d |>
             dplyr::filter(P.Value < 0.05 | VIP_comp1 >= 2) |>
-            dplyr::mutate(exposure = exp,
-                          analysis = analysis_label_lookup[[exp]],
+            dplyr::mutate(exposure = exposure_label_lookup[[exp]],
                           esi = esi)
         }) |>
         purrr::compact() |>
@@ -96,8 +111,7 @@ build_salsa_tab <- function(population, covar) {
       p                    = P.Value,
       FDR                  = adj.P.Val,
       VIP                  = VIP_comp1,
-      exposure             = exposure,
-      analysis             = analysis
+      exposure             = exposure
     ) |>
     dplyr::arrange(p)
 }
@@ -116,8 +130,7 @@ build_meta_tab <- function(covar) {
           if (is.null(d)) return(NULL)
           d |>
             dplyr::filter(!is.na(p_fe), p_fe < 0.05) |>
-            dplyr::mutate(exposure = exp,
-                          analysis = analysis_label_lookup[[exp]],
+            dplyr::mutate(exposure = exposure_label_lookup[[exp]],
                           esi = esi)
         }) |>
         purrr::compact() |>
@@ -152,13 +165,172 @@ build_meta_tab <- function(covar) {
       `FE FDR`             = fdr_fe,
       `I^2 (%)`            = i2_pct,
       `Cochran Q p`        = p_het,
-      exposure             = exposure,
-      analysis             = analysis
+      exposure             = exposure
     ) |>
     dplyr::arrange(`FE p`)
 }
 
-# 4. Workbook assembly ------------------------------------------------------
+# 4. Mummichog pathway builders --------------------------------------------
+
+# Where the MetaboAnalyst Mummichog outputs live:
+#   main analysis:  metaboAnalyst/Output/{total|cox}/{population}/{covar}/{exp}
+#   meta analysis:  metaboAnalyst/Output/meta/{total|cox}/all/{covar}/{exp}
+mum_root <- here::here("metaboAnalyst", "Output")
+
+# Map of which exposures live under "total" (cross-sectional) vs "cox".
+mummi_exposures <- list(
+  total = c("comp_wqs_all", "comp_qgcomp_all"),
+  cox   = c("comp_qgcomp_cox_all")
+)
+mummi_populations <- c("all", "no demcind", "demcind")
+
+read_pathway_csv <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  raw <- utils::read.csv(path, check.names = FALSE,
+                         stringsAsFactors = FALSE)
+  # MetaboAnalyst writes the pathway name as an unnamed first column.
+  names(raw)[1] <- "pathway_name"
+  raw
+}
+
+read_matched_csv <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  utils::read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)
+}
+
+# Build the "List of enriched pathways" sheet for either main or meta scope.
+#   scope: "main" -> iterates total/cox × populations, P(Fisher) < 0.05
+#          "meta" -> iterates meta/{total|cox} × "all" only, P(Fisher) < 0.1
+build_pathway_tab <- function(covar, scope = c("main", "meta")) {
+  scope <- match.arg(scope)
+  pops    <- if (scope == "main") mummi_populations else "all"
+  base    <- if (scope == "main") mum_root         else file.path(mum_root, "meta")
+  p_cut   <- if (scope == "main") 0.05             else 0.1
+
+  purrr::imap(mummi_exposures, function(exposures, study) {
+    purrr::map(pops, function(pop) {
+      purrr::map(exposures, function(exp) {
+        path <- file.path(base, study, pop, covar, exp,
+                          "mummichog_pathway_enrichment_mummichog.csv")
+        d <- read_pathway_csv(path)
+        if (is.null(d)) return(NULL)
+        d |>
+          dplyr::transmute(
+            `pathway name`   = pathway_name,
+            `pathway size`   = `Pathway total`,
+            `# of peaks`     = Hits.total,
+            `# of sig peaks` = Hits.sig,
+            p                = `P(Fisher)`,
+            empirical        = Empirical,
+            adj.p            = AdjP.Fisher,
+            exposure         = exposure_label_lookup[[exp]],
+            population       = pop
+          ) |>
+          dplyr::filter(!is.na(p), p < p_cut)
+      }) |> purrr::compact() |> purrr::list_rbind()
+    }) |> purrr::list_rbind()
+  }) |> purrr::list_rbind() |>
+    dplyr::arrange(p)
+}
+
+# KEGG compound-name lookup. Queries the REST API in batches of 10 and caches
+# results in-memory; ids that aren't KEGG-formatted (e.g. CE1556, BiGG abbrevs)
+# or that 404 on KEGG return NA so callers can drop them.
+.kegg_name_cache <- new.env(parent = emptyenv())
+get_kegg_names <- function(ids) {
+  ids <- unique(ids)
+  to_query <- ids[grepl("^C[0-9]+$", ids) & !vapply(ids,
+                  function(x) exists(x, envir = .kegg_name_cache),
+                  logical(1))]
+  if (length(to_query) > 0) {
+    message("  KEGG: looking up ", length(to_query), " compound names ...")
+    chunks <- split(to_query, ceiling(seq_along(to_query) / 10))
+    for (ch in chunks) {
+      res <- tryCatch(KEGGREST::keggGet(ch), error = function(e) NULL)
+      hit_ids <- character(0)
+      if (!is.null(res)) {
+        for (e in res) {
+          nm <- if (!is.null(e$NAME)) trimws(gsub(";$", "", e$NAME[1])) else NA_character_
+          if (is.null(nm) || !nzchar(nm)) nm <- NA_character_
+          assign(e$ENTRY, nm, envir = .kegg_name_cache)
+          hit_ids <- c(hit_ids, e$ENTRY)
+        }
+      }
+      # Cache misses so we don't retry them.
+      for (miss in setdiff(ch, hit_ids)) {
+        assign(miss, NA_character_, envir = .kegg_name_cache)
+      }
+    }
+  }
+  out <- vapply(ids, function(x) {
+    if (exists(x, envir = .kegg_name_cache))
+      get(x, envir = .kegg_name_cache)
+    else NA_character_
+  }, character(1))
+  setNames(out, ids)
+}
+
+# Build the feature-to-pathway mapping sheet for the requested covariate set.
+# Only mappings for pathways that pass P(Fisher) < 0.05 are kept, matching the
+# enriched-pathway filter in build_pathway_tab().
+build_feature_pathway_tab <- function(covar) {
+  pops <- mummi_populations
+  purrr::imap(mummi_exposures, function(exposures, study) {
+    purrr::map(pops, function(pop) {
+      purrr::map(exposures, function(exp) {
+        dir_path <- file.path(mum_root, study, pop, covar, exp)
+        path_csv <- read_pathway_csv(file.path(dir_path,
+                                  "mummichog_pathway_enrichment_mummichog.csv"))
+        comp_csv <- read_matched_csv(file.path(dir_path,
+                                  "mummichog_matched_compound_all.csv"))
+        if (is.null(path_csv) || is.null(comp_csv)) return(NULL)
+
+        sig <- path_csv |>
+          dplyr::filter(!is.na(`P(Fisher)`), `P(Fisher)` < 0.05) |>
+          dplyr::select(`pathway name` = pathway_name,
+                        cpd.hits)
+        if (nrow(sig) == 0) return(NULL)
+
+        # Explode the semicolon-separated empirical-compound list and join
+        # to the per-feature matched table.
+        long <- sig |>
+          dplyr::mutate(
+            Empirical.Compound = stringr::str_split(cpd.hits, ";")
+          ) |>
+          tidyr::unnest(Empirical.Compound) |>
+          dplyr::select(-cpd.hits) |>
+          dplyr::inner_join(comp_csv, by = "Empirical.Compound",
+                            relationship = "many-to-many")
+
+        long |>
+          dplyr::transmute(
+            `pathway name`     = `pathway name`,
+            `matched compound` = Matched.Compound,
+            met = paste0("mz_rt_",
+                         round(as.numeric(Query.Mass), 4), "_",
+                         round(as.numeric(Retention.Time), 4)),
+            adduct           = Matched.Form,
+            exposure         = exposure_label_lookup[[exp]],
+            population       = pop
+          ) |>
+          dplyr::distinct()
+      }) |> purrr::compact() |> purrr::list_rbind()
+    }) |> purrr::list_rbind()
+  }) |> purrr::list_rbind() |>
+    # Attach KEGG compound names; drop rows where the matched compound is not
+    # KEGG-formatted or the ID can't be resolved against KEGG.
+    {\(d) {
+      if (nrow(d) == 0) return(dplyr::mutate(d, `compound name` = character(0)))
+      lookup <- get_kegg_names(d$`matched compound`)
+      d |>
+        dplyr::mutate(`compound name` = unname(lookup[d$`matched compound`])) |>
+        dplyr::filter(!is.na(`compound name`))
+    }}() |>
+    dplyr::select(`pathway name`, `matched compound`, met, adduct,
+                  `compound name`, exposure, population)
+}
+
+# 5. Workbook assembly ------------------------------------------------------
 
 title_style  <- openxlsx::createStyle(textDecoration = "bold",
                                       fontSize = 12,
@@ -205,6 +377,24 @@ meta_specs <- list(
        title = "Table S8. Summary of cross-cohort (SALSA × WHICAP) fixed-effect meta-analysis features at P_FE < 0.05 in the full cohort using the sensitivity covariates")
 )
 
+pathway_specs <- list(
+  list(sheet = "Table S9",  scope = "main", covar = "covar",
+       title = "Table S9. List of enriched pathways (P < 0.05) from the Mummichog main analysis using the primary covariates"),
+  list(sheet = "Table S10", scope = "main", covar = "covar_sen",
+       title = "Table S10. List of enriched pathways (P < 0.05) from the Mummichog main analysis using the sensitivity covariates"),
+  list(sheet = "Table S11", scope = "meta", covar = "covar",
+       title = "Table S11. List of enriched pathways (P < 0.05) from the cross-cohort (SALSA × WHICAP) Mummichog meta-analysis using the primary covariates"),
+  list(sheet = "Table S12", scope = "meta", covar = "covar_sen",
+       title = "Table S12. List of enriched pathways (P < 0.05) from the cross-cohort (SALSA × WHICAP) Mummichog meta-analysis using the sensitivity covariates")
+)
+
+feature_pathway_specs <- list(
+  list(sheet = "Table S13", covar = "covar",
+       title = "Table S13. Feature-to-pathway mapping table for enriched pathways (P < 0.05) using the primary covariates"),
+  list(sheet = "Table S14", covar = "covar_sen",
+       title = "Table S14. Feature-to-pathway mapping table for enriched pathways (P < 0.05) using the sensitivity covariates")
+)
+
 wb <- openxlsx::createWorkbook()
 
 purrr::walk(salsa_specs, function(spec) {
@@ -218,6 +408,21 @@ purrr::walk(salsa_specs, function(spec) {
 purrr::walk(meta_specs, function(spec) {
   message("Building Meta ", spec$sheet, " (all / ", spec$covar, ") ...")
   d <- build_meta_tab(spec$covar)
+  message("  ", nrow(d), " rows")
+  write_sheet(wb, spec$sheet, spec$title, d)
+})
+
+purrr::walk(pathway_specs, function(spec) {
+  message("Building Pathway ", spec$sheet, " (", spec$scope, " / ",
+          spec$covar, ") ...")
+  d <- build_pathway_tab(spec$covar, scope = spec$scope)
+  message("  ", nrow(d), " rows")
+  write_sheet(wb, spec$sheet, spec$title, d)
+})
+
+purrr::walk(feature_pathway_specs, function(spec) {
+  message("Building Feature-to-pathway ", spec$sheet, " (", spec$covar, ") ...")
+  d <- build_feature_pathway_tab(spec$covar)
   message("  ", nrow(d), " rows")
   write_sheet(wb, spec$sheet, spec$title, d)
 })
