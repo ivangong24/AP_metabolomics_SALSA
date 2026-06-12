@@ -146,7 +146,7 @@ pathway_all <- pathway_files |>
   purrr::list_rbind()
 
 pathway_sig <- pathway_all |>
-  dplyr::filter(p_value < 0.1) |>
+  dplyr::filter(p_value < 0.05) |>
   dplyr::arrange(p_value) |>
   dplyr::mutate(
     enrichment_factor = hits_sig / expected,
@@ -551,7 +551,7 @@ if (!is.null(p_bubble_all)) {
     filename = here::here("figures", "test_pathway",
                           "option_A_bubble_heatmap_all.png"),
     plot = p_bubble_all,
-    width = 9,
+    width = 12,
     height = max(8, dplyr::n_distinct(covar_data_all$pathway_name) * 0.35),
     dpi = 300
   )

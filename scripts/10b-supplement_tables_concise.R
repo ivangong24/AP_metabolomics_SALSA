@@ -1,46 +1,39 @@
 ## ---------------------------
 ##
-## Script name: 10-supplement_tables.R
-## Purpose of script: Build the consolidated supplement-table workbook for
-##                    SALSA composite MWAS results and the cross-cohort
-##                    (SALSA × WHICAP) fixed-effect meta-analysis.
+## Script name: 10b-supplement_tables_concise.R
+## Purpose of script: Build a *concise* companion to the main supplement
+##                    workbook produced by 10-supplement_tables.R. The
+##                    concise version reports only FDR < 0.05 features and
+##                    pools all platforms, exposures, and populations into
+##                    a single sheet per covar set, with platform / exposure /
+##                    population recorded as added columns so each row can
+##                    still be traced back to its slice.
 ##
 ## Author: Yufan Gong
 ##
-## Date Created: 2026-06-05
+## Date Created: 2026-06-10
 ##
 ## Notes:
-##   - Output: tables/Supplement tables_composite_meta.xlsx
-##       Parent groups S1-S8 are each decomposed into 2 (platform) × 3
-##       (exposure) = 6 stats subsheets + 6 annotated companions. The
-##       annotated companions list only the features whose annotation is
-##       non-missing and carry only the annotation columns.
-##         Table S1.1-S1.6 (+ S1.1a-S1.6a):  full cohort, primary covar
-##         Table S2.1-S2.6 (+ S2.1a-S2.6a):  no demcind, primary covar
-##         Table S3.1-S3.6 (+ S3.1a-S3.6a):  demcind, primary covar
-##         Table S4.1-S4.6 (+ S4.1a-S4.6a):  full cohort, sensitivity covar
-##         Table S5.1-S5.6 (+ S5.1a-S5.6a):  no demcind, sensitivity covar
-##         Table S6.1-S6.6 (+ S6.1a-S6.6a):  demcind, sensitivity covar
-##         Table S7.1-S7.6 (+ S7.1a-S7.6a):  meta full cohort, primary covar
-##         Table S8.1-S8.6 (+ S8.1a-S8.6a):  meta full cohort, sensitivity covar
-##         Table S9-S10:  Mummichog enriched pathways (P < 0.05),
-##                        main analysis, primary / sensitivity covar
-##         Table S11-S12: Mummichog enriched pathways (P < 0.1),
-##                        meta-analysis, primary / sensitivity covar
-##         Table S13-S14: Feature-to-pathway mapping for enriched pathways,
-##                        primary / sensitivity covar (KEGG names attached)
-##   - Slice index m: 1 = C18 × WQS, 2 = C18 × QGcomp, 3 = C18 × QGcomp (COX),
-##                    4 = HILIC × WQS, 5 = HILIC × QGcomp, 6 = HILIC × QGcomp (COX).
-##   - SALSA filter: composite exposures only AND
-##                   (P.Value < 0.05 OR VIP_comp1 >= 2). Annotation is *not*
-##                   required for the stats subsheets.
-##   - logFC 95% CI is recovered from the saved limma fits via
-##     topTable(confint = TRUE) so the bounds come from the model's empirical
-##     Bayes-moderated SE rather than an SE = logFC/t approximation.
-##   - Meta filter: composite exposures only, "all" population, p_fe < 0.05.
-##   - Visual format: Times New Roman 11; merged title row 1 (TNR 12 bold);
-##     header row 2 bold with top/bottom borders; numeric cells 0.00,
-##     p-value / FDR cells scientific 0.00E+00.
+##   - Output: Supplement/Supplement tables_concise.xlsx
+##         Table S1 / S1a: SALSA, primary covar, FDR < 0.05
+##         Table S2 / S2a: SALSA, sensitivity covar, FDR < 0.05
+##         Table S3 / S3a: Meta (SALSA × WHICAP), primary covar, FE FDR < 0.05
+##         Table S4 / S4a: Meta, sensitivity covar, FE FDR < 0.05
+##         Table S5-S8:    Mummichog pathway enrichment sheets
+##                         (main primary, main sensitivity, meta primary,
+##                         meta sensitivity); carried over from the main
+##                         workbook with renumbered IDs.
+##         Table S9-S10:   Feature-to-pathway mapping sheets (primary,
+##                         sensitivity); carried over with renumbered IDs.
+##   - SALSA stats columns: met, logFC, 95% CI, p, FDR, VIP, platform,
+##                          exposure, population.
+##   - Meta stats columns:  met, FE estimate, FE 95% CI, FE p, FE FDR,
+##                          I^2 (%), Cochran Q p, platform, exposure.
+##   - Annotated sheets (*a) carry only rows with a non-empty annotation
+##     and only the annotation columns + platform / exposure / population.
+##   - This script intentionally duplicates helpers from
+##     10-supplement_tables.R rather than sourcing them, so it can be run
+##     standalone.
 ## ---------------------------
 
 pacman::p_load(tidyverse, here, openxlsx, KEGGREST, limma)
@@ -55,8 +48,6 @@ load(here::here("data", "metabolomics", "results", "limma_fit_hilic.RData"))
 
 # 1. Lookup tables ----------------------------------------------------------
 
-# Composite exposures grouped by which fit holds them (cross-sectional limma
-# results live under "total"; the time-to-event Cox limma fits under "cox").
 composite_exposures <- list(
   total = c("comp_wqs_all", "comp_qgcomp_all"),
   cox   = c("comp_qgcomp_cox_all")
@@ -68,19 +59,24 @@ exposure_label_lookup <- c(
   comp_qgcomp_cox_all = "QGcomp (COX)"
 )
 
-# Slice plan: each S1-S8 parent table is decomposed in this order.
 slice_plan <- tibble::tribble(
-  ~idx, ~esi_key, ~esi_label,            ~exp_key,              ~study,
-  1,    "c18",    "C18 (negative ESI)",  "comp_wqs_all",        "total",
-  2,    "c18",    "C18 (negative ESI)",  "comp_qgcomp_all",     "total",
-  3,    "c18",    "C18 (negative ESI)",  "comp_qgcomp_cox_all", "cox",
-  4,    "hilic",  "HILIC (positive ESI)", "comp_wqs_all",        "total",
-  5,    "hilic",  "HILIC (positive ESI)", "comp_qgcomp_all",     "total",
-  6,    "hilic",  "HILIC (positive ESI)", "comp_qgcomp_cox_all", "cox"
+  ~idx, ~esi_key, ~esi_label, ~exp_key,              ~study,
+  1,    "c18",    "C18",      "comp_wqs_all",        "total",
+  2,    "c18",    "C18",      "comp_qgcomp_all",     "total",
+  3,    "c18",    "C18",      "comp_qgcomp_cox_all", "cox",
+  4,    "hilic",  "HILIC",    "comp_wqs_all",        "total",
+  5,    "hilic",  "HILIC",    "comp_qgcomp_all",     "total",
+  6,    "hilic",  "HILIC",    "comp_qgcomp_cox_all", "cox"
 )
 slice_plan$exp_label <- exposure_label_lookup[slice_plan$exp_key]
 
-# Parse m/z and RT from the "mz_rt_<m/z>_<rt>" feature ID.
+salsa_populations <- c("all", "no demcind", "demcind")
+population_label_lookup <- c(
+  "all"        = "full cohort",
+  "no demcind" = "no dementia/CIND",
+  "demcind"    = "dementia/CIND"
+)
+
 parse_met <- function(met){
   parts <- stringr::str_split_fixed(met, "_", 4)
   tibble::tibble(mz = as.numeric(parts[, 3]),
@@ -94,8 +90,6 @@ format_ci <- function(lo, hi) {
 }
 
 # 2. logFC CI extraction ----------------------------------------------------
-# Re-run topTable(..., confint = TRUE) against the saved MArrayLM objects so
-# the 95% CI uses limma's empirical-Bayes moderated SE.
 
 extract_logfc_ci <- function(fit, coef) {
   tt <- limma::topTable(fit,
@@ -110,103 +104,131 @@ extract_logfc_ci <- function(fit, coef) {
   )
 }
 
-# 3. SALSA slice builder ----------------------------------------------------
-# Returns a wide tibble holding the stats + annotation columns for a single
-# (population, covar, esi, exposure) slice. Trimmers below carve this into
-# the stats sheet and the annotated companion sheet.
+# 3. SALSA pooled builder ---------------------------------------------------
+# Walks every slice × population for a given covar set and returns a single
+# long tibble of FDR < 0.05 features. Adds platform / exposure / population
+# columns so rows from different slices are distinguishable in the pooled
+# sheet.
 
-build_salsa_slice_wide <- function(population, covar, slice) {
-  combined_list <- if (slice$esi_key == "c18") {
-    combined_results_list_c18
-  } else {
-    combined_results_list_hilic
-  }
-  annot_wide <- if (slice$esi_key == "c18") {
-    annotation_c18_wide
-  } else {
-    annotation_hilic_wide
-  }
-  fit_list <- if (slice$esi_key == "c18") {
-    limma_fit_c18
-  } else {
-    limma_fit_hilic
-  }
+build_salsa_pooled_wide <- function(covar) {
+  purrr::map(salsa_populations, function(pop) {
+    purrr::map(seq_len(nrow(slice_plan)), function(i) {
+      slice <- as.list(slice_plan[i, ])
 
-  d <- combined_list[[slice$study]][[population]][[covar]][[slice$exp_key]]
-  if (is.null(d)) return(NULL)
+      combined_list <- if (slice$esi_key == "c18") {
+        combined_results_list_c18
+      } else {
+        combined_results_list_hilic
+      }
+      annot_wide <- if (slice$esi_key == "c18") {
+        annotation_c18_wide
+      } else {
+        annotation_hilic_wide
+      }
+      fit_list <- if (slice$esi_key == "c18") {
+        limma_fit_c18
+      } else {
+        limma_fit_hilic
+      }
 
-  fit <- fit_list[[slice$study]][[population]][[covar]][[slice$exp_key]]
-  ci  <- extract_logfc_ci(fit, slice$exp_key)
+      d <- combined_list[[slice$study]][[pop]][[covar]][[slice$exp_key]]
+      if (is.null(d)) return(NULL)
 
-  d |>
-    dplyr::filter(P.Value < 0.05 | VIP_comp1 >= 2) |>
-    dplyr::left_join(ci,         by = "met") |>
-    dplyr::left_join(annot_wide, by = c("met" = "id")) |>
-    dplyr::mutate(parse_met(met)) |>
-    dplyr::transmute(
-      met         = paste0("mz_rt_", round(mz, 4), "_", round(rt, 4)),
-      annotation  = compound,
-      `chemical ID`        = chemical_id,
-      `confidence level`   = confidence,
-      `reference database` = reference,
-      logFC       = logFC,
-      `95% CI`    = format_ci(CI.L, CI.R),
-      p           = P.Value,
-      FDR         = adj.P.Val,
-      VIP         = VIP_comp1
-    ) |>
-    dplyr::arrange(FDR)
+      fit <- fit_list[[slice$study]][[pop]][[covar]][[slice$exp_key]]
+      ci  <- extract_logfc_ci(fit, slice$exp_key)
+
+      d |>
+        dplyr::filter(adj.P.Val < 0.05) |>
+        dplyr::left_join(ci,         by = "met") |>
+        dplyr::left_join(annot_wide, by = c("met" = "id")) |>
+        dplyr::mutate(parse_met(met)) |>
+        dplyr::transmute(
+          met         = paste0("mz_rt_", round(mz, 4), "_", round(rt, 4)),
+          annotation  = compound,
+          `chemical ID`        = chemical_id,
+          `confidence level`   = confidence,
+          `reference database` = reference,
+          logFC       = logFC,
+          `95% CI`    = format_ci(CI.L, CI.R),
+          p           = P.Value,
+          FDR         = adj.P.Val,
+          VIP         = VIP_comp1,
+          platform    = slice$esi_label,
+          exposure    = slice$exp_label,
+          population  = population_label_lookup[[pop]]
+        )
+    }) |> purrr::compact() |> purrr::list_rbind()
+  }) |> purrr::list_rbind() |>
+    dplyr::arrange(population, exposure, platform, FDR)
 }
 
-salsa_stats_cols <- c("met", "logFC", "95% CI", "p", "FDR", "VIP")
-annotation_cols  <- c("met", "annotation", "chemical ID",
-                      "confidence level", "reference database")
+salsa_stats_cols <- c("met", "logFC", "95% CI", "p", "FDR", "VIP",
+                      "platform", "exposure", "population")
+salsa_anno_cols  <- c("met", "annotation", "chemical ID",
+                      "confidence level", "reference database",
+                      "platform", "exposure", "population")
 
-trim_stats     <- function(d) dplyr::select(d, dplyr::all_of(salsa_stats_cols))
-trim_anno      <- function(d) {
+trim_salsa_stats <- function(d) dplyr::select(d, dplyr::all_of(salsa_stats_cols))
+trim_salsa_anno  <- function(d) {
   d |>
     dplyr::filter(!is.na(annotation), nzchar(annotation)) |>
-    dplyr::select(dplyr::all_of(annotation_cols)) |>
-    # Break the semicolon-separated annotation / chemical-ID lists onto one
-    # line per entry so Excel's wrapText renders each candidate on its own row.
+    dplyr::select(dplyr::all_of(salsa_anno_cols)) |>
     dplyr::mutate(
       annotation    = gsub(";\\s*", "\n", annotation),
       `chemical ID` = gsub(";\\s*", "\n", `chemical ID`)
     )
 }
 
-# 4. Meta slice builder -----------------------------------------------------
+# 4. Meta pooled builder ----------------------------------------------------
 
-build_meta_slice_wide <- function(covar, slice) {
-  meta_list <- if (slice$esi_key == "c18") meta_annotated_c18 else meta_annotated_hilic
-  d <- meta_list[[slice$study]][["all"]][[covar]][[slice$exp_key]]
-  if (is.null(d)) return(NULL)
+build_meta_pooled_wide <- function(covar) {
+  purrr::map(seq_len(nrow(slice_plan)), function(i) {
+    slice <- as.list(slice_plan[i, ])
+    meta_list <- if (slice$esi_key == "c18") meta_annotated_c18 else meta_annotated_hilic
+    d <- meta_list[[slice$study]][["all"]][[covar]][[slice$exp_key]]
+    if (is.null(d)) return(NULL)
 
-  d |>
-    dplyr::filter(!is.na(p_fe), p_fe < 0.05) |>
-    dplyr::transmute(
-      met                  = paste0("mz_rt_",
-                                    round(whicap_mz, 4), "_",
-                                    round(whicap_time, 4)),
-      annotation           = compound,
-      `chemical ID`        = chemical_id,
-      `confidence level`   = confidence,
-      `reference database` = reference,
-      `FE estimate`        = estimate_fe,
-      `FE 95% CI`          = format_ci(ci_lb_fe, ci_ub_fe),
-      `FE p`               = p_fe,
-      `FE FDR`             = fdr_fe,
-      `I^2 (%)`            = i2_pct,
-      `Cochran Q p`        = p_het
-    ) |>
-    dplyr::arrange(`FE FDR`)
+    d |>
+      dplyr::filter(!is.na(fdr_fe), fdr_fe < 0.05) |>
+      dplyr::transmute(
+        met                  = paste0("mz_rt_",
+                                      round(whicap_mz, 4), "_",
+                                      round(whicap_time, 4)),
+        annotation           = compound,
+        `chemical ID`        = chemical_id,
+        `confidence level`   = confidence,
+        `reference database` = reference,
+        `FE estimate`        = estimate_fe,
+        `FE 95% CI`          = format_ci(ci_lb_fe, ci_ub_fe),
+        `FE p`               = p_fe,
+        `FE FDR`             = fdr_fe,
+        `I^2 (%)`            = i2_pct,
+        `Cochran Q p`        = p_het,
+        platform             = slice$esi_label,
+        exposure             = slice$exp_label
+      )
+  }) |> purrr::compact() |> purrr::list_rbind() |>
+    dplyr::arrange(exposure, platform, `FE FDR`)
 }
 
 meta_stats_cols <- c("met",
                      "FE estimate", "FE 95% CI", "FE p", "FE FDR",
-                     "I^2 (%)", "Cochran Q p")
+                     "I^2 (%)", "Cochran Q p",
+                     "platform", "exposure")
+meta_anno_cols  <- c("met", "annotation", "chemical ID",
+                     "confidence level", "reference database",
+                     "platform", "exposure")
 
 trim_meta_stats <- function(d) dplyr::select(d, dplyr::all_of(meta_stats_cols))
+trim_meta_anno  <- function(d) {
+  d |>
+    dplyr::filter(!is.na(annotation), nzchar(annotation)) |>
+    dplyr::select(dplyr::all_of(meta_anno_cols)) |>
+    dplyr::mutate(
+      annotation    = gsub(";\\s*", "\n", annotation),
+      `chemical ID` = gsub(";\\s*", "\n", `chemical ID`)
+    )
+}
 
 # 5. Mummichog pathway builders --------------------------------------------
 
@@ -231,8 +253,6 @@ read_matched_csv <- function(path) {
   utils::read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)
 }
 
-# scope: "main" -> total/cox × populations, P(Fisher) < 0.05
-#        "meta" -> meta/{total|cox} × "all" only, P(Fisher) < 0.1
 build_pathway_tab <- function(covar, scope = c("main", "meta")) {
   scope <- match.arg(scope)
   pops    <- if (scope == "main") mummi_populations else "all"
@@ -256,7 +276,7 @@ build_pathway_tab <- function(covar, scope = c("main", "meta")) {
             empirical        = Empirical,
             adj.p            = AdjP.Fisher,
             exposure         = exposure_label_lookup[[exp]],
-            population       = pop
+            population       = population_label_lookup[[pop]]
           ) |>
           dplyr::filter(!is.na(p), p < p_cut)
       }) |> purrr::compact() |> purrr::list_rbind()
@@ -265,8 +285,6 @@ build_pathway_tab <- function(covar, scope = c("main", "meta")) {
     dplyr::arrange(p)
 }
 
-# KEGG compound-name lookup. Queries the REST API in batches of 10 and caches
-# results so each unique ID is only looked up once per session.
 .kegg_name_cache <- new.env(parent = emptyenv())
 get_kegg_names <- function(ids) {
   ids <- unique(ids)
@@ -336,7 +354,7 @@ build_feature_pathway_tab <- function(covar) {
                          round(as.numeric(Retention.Time), 4)),
             adduct           = Matched.Form,
             exposure         = exposure_label_lookup[[exp]],
-            population       = pop
+            population       = population_label_lookup[[pop]]
           ) |>
           dplyr::distinct()
       }) |> purrr::compact() |> purrr::list_rbind()
@@ -385,8 +403,6 @@ body_vcenter_style <- openxlsx::createStyle(fontName = "Times New Roman",
                                             fontSize = 11,
                                             valign = "center")
 
-# Column-name -> style mapping for numeric / scientific formatting. Anything
-# not matched falls through to body_general_style.
 number_cols <- c("logFC", "VIP",
                  "SALSA logFC", "SALSA VIP",
                  "WHICAP logFC",
@@ -427,16 +443,11 @@ write_sheet <- function(wb, sheet_name, title, data) {
                            rows = data_rows, cols = ci, gridExpand = TRUE)
       }
     }
-    # Bottom border only on the last data row; stacked so the column-specific
-    # number / scientific formatting on that row stays intact.
     last_row <- 2 + nrows
     openxlsx::addStyle(wb, sheet_name, style = last_row_border,
                        rows = last_row, cols = 1:ncols,
                        gridExpand = TRUE, stack = TRUE)
 
-    # Annotation and chemical-ID columns get wrap-text styling so the
-    # newline-delimited list (one per line, from `;` substitution above) is
-    # visible.
     wrap_cols <- c("annotation", "chemical ID",
                    "pathway name", "matched compound", "compound name")
     wrap_idx <- which(colnames(data) %in% wrap_cols)
@@ -444,11 +455,9 @@ write_sheet <- function(wb, sheet_name, title, data) {
       openxlsx::addStyle(wb, sheet_name, style = body_wrap_style,
                          rows = data_rows, cols = wrap_idx,
                          gridExpand = TRUE, stack = TRUE)
-      # When wrapped multi-line cells exist on a row, vertically center the
-      # neighbouring single-line cells so they sit in the middle rather than
-      # pinning to the top.
       vcenter_cols <- which(colnames(data) %in%
-                              c("met", "confidence level", "reference database"))
+                              c("met", "confidence level", "reference database",
+                                "platform", "exposure", "population"))
       if (length(vcenter_cols)) {
         openxlsx::addStyle(wb, sheet_name, style = body_vcenter_style,
                            rows = data_rows, cols = vcenter_cols,
@@ -457,12 +466,6 @@ write_sheet <- function(wb, sheet_name, title, data) {
     }
   }
 
-  # Column widths: size each column to its *displayed* longest string.
-  #  - Number-formatted (0.00) and scientific (0.00E+00) columns use the
-  #    formatted preview rather than full numeric precision.
-  #  - Wrapped columns (annotation, chemical ID) measure only the longest
-  #    single line and are capped so a long compound name doesn't blow up
-  #    the column; wrapText handles overflow vertically.
   WRAP_CAP        <- 30
   WRAP_CAP_NARROW <- 22
   widths <- vapply(seq_len(ncols), function(ci) {
@@ -498,10 +501,6 @@ write_sheet <- function(wb, sheet_name, title, data) {
   }, numeric(1))
   openxlsx::setColWidths(wb, sheet_name, cols = seq_len(ncols), widths = widths)
 
-  # Title row height: size it to exactly the number of lines the wrapped
-  # title needs at the actual merged-cell width. Excel can't auto-fit row
-  # heights on merged cells, so we compute lines from the sum of column
-  # widths (the title font is 12 pt vs the body's 11 pt, hence ~0.92).
   chars_per_line <- max(1, sum(widths) * 0.92)
   n_lines        <- max(1, ceiling(nchar(title) / chars_per_line))
   openxlsx::setRowHeights(wb, sheet_name, rows = 1,
@@ -510,133 +509,117 @@ write_sheet <- function(wb, sheet_name, title, data) {
 
 # 7. Spec lists -------------------------------------------------------------
 
-salsa_parents <- list(
-  list(id = "S1", pop = "all",        covar = "covar",
-       pop_label = "the full cohort",
+salsa_concise_specs <- list(
+  list(id = "S1", covar = "covar",
        covar_label = "primary covariates"),
-  list(id = "S2", pop = "no demcind", covar = "covar",
-       pop_label = "participants without dementia/CIND",
-       covar_label = "primary covariates"),
-  list(id = "S3", pop = "demcind",    covar = "covar",
-       pop_label = "participants with dementia/CIND",
-       covar_label = "primary covariates"),
-  list(id = "S4", pop = "all",        covar = "covar_sen",
-       pop_label = "the full cohort",
-       covar_label = "sensitivity covariates"),
-  list(id = "S5", pop = "no demcind", covar = "covar_sen",
-       pop_label = "participants without dementia/CIND",
-       covar_label = "sensitivity covariates"),
-  list(id = "S6", pop = "demcind",    covar = "covar_sen",
-       pop_label = "participants with dementia/CIND",
+  list(id = "S2", covar = "covar_sen",
        covar_label = "sensitivity covariates")
 )
 
-meta_parents <- list(
-  list(id = "S7", covar = "covar",
+meta_concise_specs <- list(
+  list(id = "S3", covar = "covar",
        covar_label = "primary covariates"),
-  list(id = "S8", covar = "covar_sen",
+  list(id = "S4", covar = "covar_sen",
        covar_label = "sensitivity covariates")
 )
 
 pathway_specs <- list(
-  list(sheet = "Table S9",  scope = "main", covar = "covar",
-       title = "Table S9. List of enriched pathways (P < 0.05) from the Mummichog main analysis using the primary covariates"),
-  list(sheet = "Table S10", scope = "main", covar = "covar_sen",
-       title = "Table S10. List of enriched pathways (P < 0.05) from the Mummichog main analysis using the sensitivity covariates"),
-  list(sheet = "Table S11", scope = "meta", covar = "covar",
-       title = "Table S11. List of enriched pathways (P < 0.1) from the cross-cohort (SALSA × WHICAP) Mummichog meta-analysis using the primary covariates"),
-  list(sheet = "Table S12", scope = "meta", covar = "covar_sen",
-       title = "Table S12. List of enriched pathways (P < 0.1) from the cross-cohort (SALSA × WHICAP) Mummichog meta-analysis using the sensitivity covariates")
+  list(sheet = "Table S5", scope = "main", covar = "covar",
+       title = "Table S5. List of enriched pathways (P < 0.05) from the Mummichog main analysis using the primary covariates"),
+  list(sheet = "Table S6", scope = "main", covar = "covar_sen",
+       title = "Table S6. List of enriched pathways (P < 0.05) from the Mummichog main analysis using the sensitivity covariates"),
+  list(sheet = "Table S7", scope = "meta", covar = "covar",
+       title = "Table S7. List of enriched pathways (P < 0.1) from the cross-cohort (SALSA × WHICAP) Mummichog meta-analysis using the primary covariates"),
+  list(sheet = "Table S8", scope = "meta", covar = "covar_sen",
+       title = "Table S8. List of enriched pathways (P < 0.1) from the cross-cohort (SALSA × WHICAP) Mummichog meta-analysis using the sensitivity covariates")
 )
 
 feature_pathway_specs <- list(
-  list(sheet = "Table S13", covar = "covar",
-       title = "Table S13. Feature-to-pathway mapping table for enriched pathways (P < 0.05) using the primary covariates"),
-  list(sheet = "Table S14", covar = "covar_sen",
-       title = "Table S14. Feature-to-pathway mapping table for enriched pathways (P < 0.05) using the sensitivity covariates")
+  list(sheet = "Table S9", covar = "covar",
+       title = "Table S9. Feature-to-pathway mapping table for enriched pathways (P < 0.05) using the primary covariates"),
+  list(sheet = "Table S10", covar = "covar_sen",
+       title = "Table S10. Feature-to-pathway mapping table for enriched pathways (P < 0.05) using the sensitivity covariates")
 )
 
 # 8. Workbook assembly ------------------------------------------------------
 
 wb <- openxlsx::createWorkbook()
 
-# 8a. SALSA parents -> 6 stats + 6 annotated subsheets each
-purrr::walk(salsa_parents, function(parent) {
-  message("Building SALSA ", parent$id, " (", parent$pop, " / ",
-          parent$covar, ") ...")
-  for (i in seq_len(nrow(slice_plan))) {
-    slice <- as.list(slice_plan[i, ])
-    wide  <- build_salsa_slice_wide(parent$pop, parent$covar, slice)
+# 8a. SALSA pooled FDR < 0.05
+purrr::walk(salsa_concise_specs, function(spec) {
+  message("Building SALSA concise ", spec$id, " (", spec$covar, ") ...")
+  wide <- build_salsa_pooled_wide(spec$covar)
 
-    # Stats subsheet
-    sheet_s <- sprintf("Table %s.%d", parent$id, slice$idx)
-    title_s <- sprintf(
-      "%s. MWAS-identified features (P < 0.05 or VIP ≥ 2) in %s using the %s on the %s platform exposed to %s",
-      sheet_s, parent$pop_label, parent$covar_label,
-      slice$esi_label, slice$exp_label)
-    d_s <- if (is.null(wide) || nrow(wide) == 0)
-             trim_stats(tibble::tibble(met = character(),
-                                       logFC = numeric(),
-                                       `95% CI` = character(),
-                                       p = numeric(), FDR = numeric(),
-                                       VIP = numeric()))
-           else trim_stats(wide)
-    message("  ", sheet_s, ": ", nrow(d_s), " rows")
-    write_sheet(wb, sheet_s, title_s, d_s)
+  sheet_s <- sprintf("Table %s", spec$id)
+  title_s <- sprintf(
+    "%s. MWAS-identified features (FDR < 0.05) across all platforms, composite exposures, and populations in SALSA using the %s",
+    sheet_s, spec$covar_label)
+  d_s <- if (is.null(wide) || nrow(wide) == 0)
+           trim_salsa_stats(tibble::tibble(met = character(),
+                                           logFC = numeric(),
+                                           `95% CI` = character(),
+                                           p = numeric(), FDR = numeric(),
+                                           VIP = numeric(),
+                                           platform = character(),
+                                           exposure = character(),
+                                           population = character()))
+         else trim_salsa_stats(wide)
+  message("  ", sheet_s, ": ", nrow(d_s), " rows")
+  write_sheet(wb, sheet_s, title_s, d_s)
 
-    # Annotated companion
-    sheet_a <- sprintf("Table %s.%da", parent$id, slice$idx)
-    title_a <- sprintf(
-      "%s. Annotated features from %s",
-      sheet_a, sheet_s)
-    d_a <- if (is.null(wide) || nrow(wide) == 0)
-             tibble::tibble(met = character(), annotation = character(),
-                            `chemical ID` = character(),
-                            `confidence level` = character(),
-                            `reference database` = character())
-           else trim_anno(wide)
-    message("  ", sheet_a, ": ", nrow(d_a), " rows")
-    write_sheet(wb, sheet_a, title_a, d_a)
-  }
+  sheet_a <- sprintf("Table %sa", spec$id)
+  title_a <- sprintf(
+    "%s. Annotated features from %s",
+    sheet_a, sheet_s)
+  d_a <- if (is.null(wide) || nrow(wide) == 0)
+           tibble::tibble(met = character(), annotation = character(),
+                          `chemical ID` = character(),
+                          `confidence level` = character(),
+                          `reference database` = character(),
+                          platform = character(),
+                          exposure = character(),
+                          population = character())
+         else trim_salsa_anno(wide)
+  message("  ", sheet_a, ": ", nrow(d_a), " rows")
+  write_sheet(wb, sheet_a, title_a, d_a)
 })
 
-# 8b. Meta parents -> 6 stats + 6 annotated subsheets each
-purrr::walk(meta_parents, function(parent) {
-  message("Building Meta ", parent$id, " (all / ", parent$covar, ") ...")
-  for (i in seq_len(nrow(slice_plan))) {
-    slice <- as.list(slice_plan[i, ])
-    wide  <- build_meta_slice_wide(parent$covar, slice)
+# 8b. Meta pooled FE FDR < 0.05
+purrr::walk(meta_concise_specs, function(spec) {
+  message("Building Meta concise ", spec$id, " (", spec$covar, ") ...")
+  wide <- build_meta_pooled_wide(spec$covar)
 
-    sheet_s <- sprintf("Table %s.%d", parent$id, slice$idx)
-    title_s <- sprintf(
-      "%s. Cross-cohort (SALSA × WHICAP) fixed-effect meta-analysis features (P_FE < 0.05) in the full cohort using the %s on the %s platform exposed to %s",
-      sheet_s, parent$covar_label, slice$esi_label, slice$exp_label)
-    d_s <- if (is.null(wide) || nrow(wide) == 0)
-             trim_meta_stats(tibble::tibble(
-               met = character(),
-               `FE estimate` = numeric(), `FE 95% CI` = character(),
-               `FE p` = numeric(), `FE FDR` = numeric(),
-               `I^2 (%)` = numeric(), `Cochran Q p` = numeric()))
-           else trim_meta_stats(wide)
-    message("  ", sheet_s, ": ", nrow(d_s), " rows")
-    write_sheet(wb, sheet_s, title_s, d_s)
+  sheet_s <- sprintf("Table %s", spec$id)
+  title_s <- sprintf(
+    "%s. Cross-cohort (SALSA × WHICAP) fixed-effect meta-analysis features (FE FDR < 0.05) across all platforms and composite exposures in the full cohort using the %s",
+    sheet_s, spec$covar_label)
+  d_s <- if (is.null(wide) || nrow(wide) == 0)
+           trim_meta_stats(tibble::tibble(
+             met = character(),
+             `FE estimate` = numeric(), `FE 95% CI` = character(),
+             `FE p` = numeric(), `FE FDR` = numeric(),
+             `I^2 (%)` = numeric(), `Cochran Q p` = numeric(),
+             platform = character(), exposure = character()))
+         else trim_meta_stats(wide)
+  message("  ", sheet_s, ": ", nrow(d_s), " rows")
+  write_sheet(wb, sheet_s, title_s, d_s)
 
-    sheet_a <- sprintf("Table %s.%da", parent$id, slice$idx)
-    title_a <- sprintf(
-      "%s. Annotated features from %s",
-      sheet_a, sheet_s)
-    d_a <- if (is.null(wide) || nrow(wide) == 0)
-             tibble::tibble(met = character(), annotation = character(),
-                            `chemical ID` = character(),
-                            `confidence level` = character(),
-                            `reference database` = character())
-           else trim_anno(wide)
-    message("  ", sheet_a, ": ", nrow(d_a), " rows")
-    write_sheet(wb, sheet_a, title_a, d_a)
-  }
+  sheet_a <- sprintf("Table %sa", spec$id)
+  title_a <- sprintf(
+    "%s. Annotated features from %s",
+    sheet_a, sheet_s)
+  d_a <- if (is.null(wide) || nrow(wide) == 0)
+           tibble::tibble(met = character(), annotation = character(),
+                          `chemical ID` = character(),
+                          `confidence level` = character(),
+                          `reference database` = character(),
+                          platform = character(), exposure = character())
+         else trim_meta_anno(wide)
+  message("  ", sheet_a, ": ", nrow(d_a), " rows")
+  write_sheet(wb, sheet_a, title_a, d_a)
 })
 
-# 8c. Pathway and feature-to-pathway sheets (unchanged: S9-S14)
+# 8c. Pathway and feature-to-pathway sheets (carried over verbatim)
 purrr::walk(pathway_specs, function(spec) {
   message("Building Pathway ", spec$sheet, " (", spec$scope, " / ",
           spec$covar, ") ...")
@@ -652,8 +635,8 @@ purrr::walk(feature_pathway_specs, function(spec) {
   write_sheet(wb, spec$sheet, spec$title, d)
 })
 
-out_path <- here::here("tables", "Supplement tables_composite_meta.xlsx")
+out_path <- here::here("Supplement", "Supplement tables_concise.xlsx")
 openxlsx::saveWorkbook(wb, file = out_path, overwrite = TRUE)
-message("Supplement workbook saved to: ", out_path)
+message("Concise supplement workbook saved to: ", out_path)
 
 #--------------------------------End of the code--------------------------------
