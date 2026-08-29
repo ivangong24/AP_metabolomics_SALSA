@@ -22,6 +22,16 @@
 ##        Output: mSet result object + bubble plot
 ##
 ##        Dependencies: MetaboAnalystR, ggrepel
+##
+##        2026-08-26: result extraction and the plot helper now resolve column
+##        names by inspection instead of assuming `P.Value` / `Hits.all`.
+##        MetaboAnalystR 4.3.0 returns FET / EASE / Gamma in `mummi.resmat`, so
+##        the previous hard-coded `arrange(P.Value)` errored after the
+##        permutations had already run. PerformPSEA also writes
+##        `mummichog_pathway_enrichment_*.csv` with richer, better-named columns
+##        (P(Fisher), P(EASE), P(Gamma), adjusted versions, Hits.sig,
+##        Hits.total, cpd.hits), so that file is preferred when present.
+##        Ported from the working version in ~/github/sleep_metabolomics_salsa.
 ## ---------------------------
 
 library(MetaboAnalystR)
@@ -83,11 +93,27 @@ run_mummichog <- function(input_file,
 
   setwd(wd_orig)
 
-  # --- 2. Extract result table ---
-  result_table <- mSet$mummi.resmat |>
-    as.data.frame() |>
-    tibble::rownames_to_column("pathway") |>
-    dplyr::arrange(P.Value)
+  # --- 2. Read the enrichment result table. PerformPSEA writes
+  #        `mummichog_pathway_enrichment_mummichog.csv` with the full, nicely
+  #        named columns -- P(Fisher), P(EASE), P(Gamma) and their adjusted
+  #        versions, Hits.sig / Hits.total, cpd.hits -- which is richer than the
+  #        in-memory resmat (FET/EASE/Gamma). Rank by the Fisher p-value. ---
+  csv_file <- list.files(
+    output_dir, pattern = "^mummichog_pathway_enrichment.*\\.csv$",
+    full.names = TRUE)
+  if (length(csv_file) > 0) {
+    result_table <- readr::read_csv(csv_file[1], show_col_types = FALSE) |>
+      dplyr::rename(pathway = 1)
+  } else {
+    result_table <- mSet$mummi.resmat |>
+      as.data.frame() |>
+      tibble::rownames_to_column("pathway")
+  }
+  p_col <- intersect(c("P(Fisher)", "FET", "P(Gamma)", "Gamma"),
+                     names(result_table))[1]
+  if (!is.na(p_col)) {
+    result_table <- dplyr::arrange(result_table, .data[[p_col]])
+  }
 
   # --- 3. Create bubble plot ---
   plot <- create_mummichog_plot(result_table)
@@ -117,14 +143,29 @@ create_mummichog_plot <- function(result_table,
 
   if (is.null(result_table) || nrow(result_table) == 0) return(NULL)
 
+  # Column names differ between the PerformPSEA CSV ("P(Fisher)", "Hits.sig",
+  # "Hits.total") and the in-memory resmat ("FET", "Hits.sig", "Hits.all"),
+  # and between MetaboAnalystR versions. Resolve them by inspection.
+  p_col   <- intersect(c("P(Fisher)", "FET", "P(Gamma)", "Gamma"),
+                       names(result_table))[1]
+  hit_col <- intersect(c("Hits.sig", "Hits_sig"), names(result_table))[1]
+  tot_col <- intersect(c("Hits.total", "Pathway.total", "Hits.all"),
+                       names(result_table))[1]
+  if (is.na(p_col) || is.na(hit_col) || is.na(tot_col)) return(NULL)
+
   plot_data <- result_table |>
-    dplyr::slice_head(n = top_n) |>
     dplyr::mutate(
-      neg_log10_p = -log10(P.Value),
-      enrichment_factor = Hits.sig / Hits.all
+      p_val = as.numeric(.data[[p_col]]),
+      n_hit = as.numeric(.data[[hit_col]]),
+      n_tot = as.numeric(.data[[tot_col]])
     ) |>
-    dplyr::filter(is.finite(enrichment_factor), is.finite(neg_log10_p)) |>
-    dplyr::arrange(dplyr::desc(neg_log10_p))
+    dplyr::filter(p_val > 0, is.finite(p_val)) |>
+    dplyr::arrange(p_val) |>
+    dplyr::slice_head(n = top_n) |>
+    dplyr::mutate(neg_log10_p = -log10(p_val),
+                  enrichment_factor = n_hit / n_tot) |>
+    dplyr::filter(is.finite(enrichment_factor), is.finite(neg_log10_p))
+
 
   if (nrow(plot_data) == 0) return(NULL)
 
@@ -141,8 +182,8 @@ create_mummichog_plot <- function(result_table,
     theme(legend.position = "none")
 
   # Label significant pathways
-  top_indices <- plot_data$P.Value < p_threshold &
-    plot_data$Hits.sig >= min_hits
+  top_indices <- plot_data$p_val < p_threshold &
+    plot_data$n_hit >= min_hits
 
   if (any(top_indices)) {
     p <- p +
