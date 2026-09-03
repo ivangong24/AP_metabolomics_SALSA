@@ -17,6 +17,7 @@
 ##
 ## Notes: Runs the revision analogues of scripts 3-7 in order:
 ##
+##   R2-exposure_windows_revision.R  1-year and 10-year exposure windows
 ##   R3-composites_revision.R    build the exposures
 ##   R4-mwas_revision.R          limma + PLS MWAS
 ##   R5-annotation_revision.R    attach compound annotations
@@ -49,11 +50,13 @@ library(here)
 REV_ROOT <- Sys.getenv("SALSA_REVISION_ROOT", unset = "revision_output")
 
 revision_scripts <- c(
+  R2 = "R2-exposure_windows_revision.R",
   R3 = "R3-composites_revision.R",
   R4 = "R4-mwas_revision.R",
   R5 = "R5-annotation_revision.R",
   R6 = "R6-pathway_revision.R",
-  R7 = "R7-visualization_revision.R"
+  R7 = "R7-visualization_revision.R",
+  R8 = "R8-dag_figure.R"
 )
 
 ## Which steps to run: command line argument, the STEPS object, or all of them

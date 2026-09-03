@@ -85,7 +85,13 @@ if (REV_QUICK) {
     })
   }
 
-  exposure_vars_list          <- exposure_vars_list |> purrr::map(~ head(.x, 2))
+  ## Two composites plus one single pollutant, so the smoke test exercises the
+  ## per-population exposure set (the pollutants are `all` only, so `all predx`
+  ## gets the composites alone -- which is exactly the case that used to be
+  ## driven by a per-study vector and now goes through exposures_for()).
+  exposure_vars_list <- exposure_vars_list |>
+    purrr::map(~ c(head(.x[!is_single_pollutant(.x)], 2),
+                   head(.x[is_single_pollutant(.x)], 1)))
   combined_results_list_c18   <- trim_grid(combined_results_list_c18)
   combined_results_list_hilic <- trim_grid(combined_results_list_hilic)
   mwas_results_list_c18       <- trim_grid(mwas_results_list_c18)
@@ -175,9 +181,8 @@ list(
   list("negative", "positive")
 ) |>
   purrr::pmap(function(mwas_results_data_list, mz_rt_link_df, mode){
-    list(mwas_results_data_list, exposure_vars_list,
-         names(exposure_vars_list)) |>
-      purrr::pmap(function(mwas_results_list, exposure_vars, study){
+    list(mwas_results_data_list, names(mwas_results_data_list)) |>
+      purrr::pmap(function(mwas_results_list, study){
         mwas_results_list |>
           purrr::imap(function(mwas_results_ls, population){
             mwas_results_ls |>
@@ -185,7 +190,9 @@ list(
                 message(paste0("Creating Mummichog input for: ",
                                study, "_", population,
                                " - ", covar_name, " (", mode, ")"))
-                exposure_vars |>
+                ## exposures_for(): the single pollutants are fitted in `all`
+                ## only, so the exposure set varies by population.
+                exposures_for(study, population) |>
                   purrr::set_names() |>
                   purrr::map(function(exp) {
                     create_mummichog_input(
@@ -204,14 +211,13 @@ list(
 
 # Combine C18 and HILIC for each exposure ------------------------------------
 
-list(mummichog_input_list_c18, mummichog_input_list_hilic,
-     exposure_vars_list) |>
-  purrr::pmap(function(c18_datalist, hilic_datalist, exposure_vars){
+list(mummichog_input_list_c18, mummichog_input_list_hilic) |>
+  purrr::pmap(function(c18_datalist, hilic_datalist){
     list(c18_datalist, hilic_datalist) |>
       purrr::pmap(function(c18_list_ls, hilic_list_ls){
         list(c18_list_ls, hilic_list_ls) |>
           purrr::pmap(function(c18_list, hilic_list){
-            exposure_vars |>
+            names(c18_list) |>
               purrr::set_names() |>
               purrr::map(function(exp) {
                 dplyr::bind_rows(
@@ -268,14 +274,13 @@ source(here::here("scripts", "mummichog_pathway.R"))
 
 # Create output directories for each exposure ---------------------------------
 
-list(combined_results_list_c18, exposure_vars_list,
-     names(exposure_vars_list)) |>
-  purrr::pmap(function(data, exposure_vars, study){
+list(combined_results_list_c18, names(combined_results_list_c18)) |>
+  purrr::pmap(function(data, study){
     names(data) |>
       purrr::walk(function(population) {
         names(covar_list) |>
           purrr::walk(function(covar_name) {
-            exposure_vars |>
+            exposures_for(study, population) |>
               purrr::walk(function(exp_name) {
                 rev_dir("metaboAnalyst", "Output", study,
                         population, covar_name, exp_name)
@@ -495,56 +500,136 @@ message("Metapone input files created in ", rev_here("Metapone", "Input"))
 
 # Run metapone for each exposure and population -------------------------------
 
-message("Running metapone pathway analysis (",
-        METAPONE_PERM, " permutations)...")
+## PARALLEL ACROSS CELLS (changed 2026-09-03).
+##
+## metapone is the long pole of the whole revision: ~430 s per cell at 1000
+## permutations, and the 3- and 10-year exposure arms roughly tripled the cell
+## count. Run one cell per worker instead of one after another.
+##
+## Each call is independent -- run_metapone() reads one input file, loads the
+## HMDB and pathway databases into its own environment and returns a result
+## object, holding no state between calls -- so this changes the wall clock and
+## nothing else. Workers are capped well below the core count because each one
+## holds its own copy of those databases; this is a memory knob, not a speed
+## one, and raising it past the point where the machine swaps makes the whole
+## stage slower.
+##
+## Seeding goes through furrr's L'Ecuyer streams, so the permutation p-values
+## are reproducible per cell and independent of how many workers ran and in
+## what order. The sequential version set no seed at all.
+METAPONE_WORKERS <- as.integer(
+  Sys.getenv("SALSA_METAPONE_WORKERS",
+             unset = max(1, min(6, future::availableCores() - 1))))
+
+message("Running metapone pathway analysis (", METAPONE_PERM,
+        " permutations) on ", METAPONE_WORKERS, " workers...")
+
+## Flatten the grid to one job per cell so every worker gets a whole cell, then
+## re-nest. The nesting is rebuilt from the job keys rather than carried
+## through the parallel call, so a failed cell still lands in the right slot.
+metapone_jobs <- combined_results_list_c18 |>
+  purrr::imap(function(data, study){
+    names(data) |>
+      purrr::map(function(population) {
+        names(covar_list) |>
+          purrr::map(function(covar_name) {
+            input_dir <- rev_here("Metapone", "Input",
+                                  study, population, covar_name)
+            input_files <- list.files(input_dir, pattern = "\\.txt$",
+                                      full.names = TRUE)
+            exp_names <- basename(input_files) |>
+              stringr::str_remove("\\.txt$") |>
+              stringr::str_remove("^mwas_") |>
+              stringr::str_remove(paste0("_", study, "_", population,
+                                         "_", covar_name, "$"))
+
+            list(input_files, exp_names) |>
+              purrr::pmap(function(input_file, exp_name){
+                list(study = study, population = population,
+                     covar_set = covar_name, exposure = exp_name,
+                     input_file = input_file)
+              })
+          })
+      })
+  }) |>
+  unlist(recursive = FALSE) |> unlist(recursive = FALSE) |>
+  unlist(recursive = FALSE)
+
+names(metapone_jobs) <- metapone_jobs |>
+  purrr::map_chr(~ paste(.x$study, .x$population, .x$covar_set, .x$exposure,
+                         sep = "|"))
+
+message("  ", length(metapone_jobs), " metapone cells queued")
+
+set.seed(42)
+future::plan(future::multisession, workers = METAPONE_WORKERS)
 
 system.time({
-  combined_results_list_c18 |>
-    purrr::imap(function(data, study){
-      names(data) |>
-        purrr::set_names() |>
-        purrr::map(function(population) {
-          names(covar_list) |>
-            purrr::set_names() |>
-            purrr::map(function(covar_name) {
-              input_dir <- rev_here("Metapone", "Input",
-                                    study, population, covar_name)
-              input_files <- list.files(input_dir, pattern = "\\.txt$",
-                                        full.names = TRUE)
-              input_files |>
-                purrr::set_names(
-                  basename(input_files) |>
-                    stringr::str_remove("\\.txt$") |>
-                    stringr::str_remove(paste0("^mwas_")) |>
-                    stringr::str_remove(paste0("_", study, "_", population,
-                                               "_", covar_name, "$"))
-                ) |>
-                purrr::imap(function(input_file, exp_name) {
-                  message(paste0("\n---Running metapone for: ",
-                                 exp_name, " (", study, "_", population, " - ",
-                                 covar_name, ") ---"))
-
-                  tryCatch(
-                    run_metapone(
-                      input_file = input_file,
-                      p_cutoff = 0.05,
-                      num_permutations = METAPONE_PERM,
-                      match_tol_ppm = 10,
-                      pos.adductlist = c("M+H", "M+Na", "M+"),
-                      neg.adductlist = c("M-H", "M-2H", "M-H2O-H")
-                    ),
-                    error = function(e) {
-                      warning(paste0("metapone failed for ", exp_name,
-                                     " (", study, "_", population, " - ",
-                                     covar_name, "): ", e$message))
-                      return(NULL)
-                    }
-                  )
-                })
-            })
-        })
-    }) -> metapone_results_combined
+  metapone_flat <- metapone_jobs |>
+    furrr::future_map(function(job) {
+      tryCatch(
+        run_metapone(
+          input_file = job$input_file,
+          p_cutoff = 0.05,
+          num_permutations = METAPONE_PERM,
+          match_tol_ppm = 10,
+          pos.adductlist = c("M+H", "M+Na", "M+"),
+          neg.adductlist = c("M-H", "M-2H", "M-H2O-H")
+        ),
+        error = function(e) {
+          warning(paste0("metapone failed for ", job$exposure,
+                         " (", job$study, "_", job$population, " - ",
+                         job$covar_set, "): ", e$message), call. = FALSE)
+          NULL
+        }
+      )
+    },
+    ## one cell per chunk: they differ in how many features pass p < 0.05, so
+    ## static chunking leaves workers idle at the end.
+    ##
+    ## `packages` is not optional. run_metapone() namespaces its metapone and
+    ## dplyr calls, but create_metapone_plot() -- which it calls to build the
+    ## bubble plot -- uses bare ggplot(), aes() and geom_text_repel(). Those
+    ## resolve in the parent because scripts/metapone_pathway.R attaches
+    ## ggplot2 and ggrepel at the top level, which a fresh worker does not
+    ## inherit, and the failure would arrive as "could not find function
+    ## 'ggplot'" after the permutations had already been paid for.
+    .options = furrr::furrr_options(
+      seed = TRUE, chunk_size = 1,
+      packages = c("metapone", "ggplot2", "ggrepel", "dplyr", "tibble")),
+    .progress = TRUE)
 })
+
+future::plan(future::sequential)
+
+n_failed <- sum(purrr::map_lgl(metapone_flat, is.null))
+if (n_failed > 0) {
+  message("  ", n_failed, " of ", length(metapone_flat),
+          " metapone cells returned NULL (see warnings above)")
+}
+
+## Re-nest to [study][population][covar_set][exposure], the shape everything
+## downstream reads.
+metapone_results_combined <- combined_results_list_c18 |>
+  purrr::imap(function(data, study){
+    names(data) |>
+      purrr::set_names() |>
+      purrr::map(function(population) {
+        names(covar_list) |>
+          purrr::set_names() |>
+          purrr::map(function(covar_name) {
+            keys <- names(metapone_jobs) |>
+              purrr::keep(~ startsWith(.x, paste(study, population, covar_name,
+                                                 "", sep = "|")))
+            metapone_flat[keys] |>
+              purrr::set_names(purrr::map_chr(metapone_jobs[keys],
+                                              ~ .x$exposure))
+          })
+      })
+  })
+
+rm(metapone_flat, metapone_jobs)
+gc()
 
 # Save metapone R objects for downstream analysis
 save(metapone_results_combined,

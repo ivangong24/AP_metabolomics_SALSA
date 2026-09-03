@@ -88,6 +88,65 @@ dat_cox_list   <- list(covar = dat_cox,   covar_sen = dat_cox_sen)
 
 exp_groups <- make_exp_groups(dat_total)
 
+
+# Windowed pollutant columns -------------------------------------------------
+
+## R2-exposure_windows_revision.R rebuilds each pollutant's average over a 3-
+## and a 10-year window. Those columns are attached to the weight-derivation
+## frames here so the cross-fitted WQS and QGcomp weights can be RE-DERIVED per
+## window rather than transported from the five-year fit -- a weight is a
+## property of the pollutant matrix it was estimated on, and carrying the
+## five-year weights onto a ten-year matrix would confound the window with the
+## weighting.
+##
+## Optional: R3 still runs without R2, and the window arm simply does not
+## appear downstream.
+window_path <- rev_here("data", "processed", "exposure_windows_revision.RData")
+
+if (file.exists(window_path)) {
+  load(window_path)
+  if (!exists("window_exposure_df")) {
+    stop("exposure_windows_revision.RData predates the windowed-pollutant ",
+         "export. Re-run R2-exposure_windows_revision.R.")
+  }
+  message("Exposure-window indices loaded: ",
+          paste(setdiff(names(window_pca_df), c("rand_id", "blood_date")),
+                collapse = ", "))
+  message("Windowed pollutant columns loaded: ",
+          paste(setdiff(names(window_exposure_df), c("rand_id", "blood_date")),
+                collapse = ", "))
+} else {
+  window_pca_df      <- tibble::tibble(rand_id = character(),
+                                       blood_date = as.Date(character()))
+  window_exposure_df <- window_pca_df
+  warning("No exposure-window extract at ", window_path,
+          " -- run R2-exposure_windows_revision.R first if the window ",
+          "sensitivity analysis is wanted.", call. = FALSE)
+}
+
+## Which windows this run can actually build. A window whose pollutant columns
+## did not arrive is dropped here rather than failing inside gWQS.
+window_cols <- setdiff(names(window_exposure_df), c("rand_id", "blood_date"))
+
+crossfit_windows <- MWAS_WINDOWS |>
+  purrr::keep(function(w) all(pollutants_for_window(w) %in% window_cols))
+
+if (!identical(sort(crossfit_windows), sort(MWAS_WINDOWS))) {
+  warning("Cross-fitted indices will not be built for window(s) ",
+          paste(setdiff(MWAS_WINDOWS, crossfit_windows), collapse = ", "),
+          ": their pollutant columns are missing from R2's extract.",
+          call. = FALSE)
+}
+
+attach_windows <- function(data) {
+  data |> dplyr::left_join(window_exposure_df,
+                           by = c("rand_id", "blood_date"))
+}
+
+dat_total_list <- dat_total_list |> purrr::map(attach_windows)
+dat_cox_list   <- dat_cox_list   |> purrr::map(attach_windows)
+dat_total      <- dat_total_list[["covar"]]
+
 message("Mixture groupings:")
 purrr::iwalk(exp_groups, ~ message("  ", .y, " (", length(.x), "): ",
                                    paste(.x, collapse = ", ")))
@@ -214,38 +273,56 @@ message("\n=== Section 2: cross-fitted indices (K = ", K_FOLDS, ") ===")
 ## Every combination of covariate set x mixture grouping x method. WQS and
 ## QGcomp logistic are derived in the pooled cohort (study = total); QGcomp Cox
 ## is derived in the incident cohort (study = cox).
+## The window dimension. "" is the five-year primary; w3 and w10 re-derive the
+## same weights on their own pollutant matrix.
+##
+## The Cox arm stays at the five-year window: it is the incident cohort's
+## single exposure, the window question is asked of the pooled cross-sectional
+## analysis, and each extra Cox index would add three more populations to the
+## pathway grid for an arm that is already the smallest.
 crossfit_specs <- tidyr::expand_grid(
   covar_set = names(covars_weight_list),
   grouping  = names(exp_groups),
-  method    = c("wqs", "qgcomp_glm", "qgcomp_cox")
+  method    = c("wqs", "qgcomp_glm", "qgcomp_cox"),
+  window    = c("", crossfit_windows)
 ) |>
+  dplyr::filter(!(method == "qgcomp_cox" & window != "")) |>
   dplyr::mutate(
     study    = dplyr::if_else(method == "qgcomp_cox", "cox", "total"),
     prefix   = dplyr::recode(method,
                              wqs        = "comp_wqs_cf_",
                              qgcomp_glm = "comp_qgcomp_cf_",
                              qgcomp_cox = "comp_qgcomp_cox_cf_"),
-    comp_name = paste0(prefix, grouping)
+    comp_name = purrr::map2_chr(prefix, window,
+                                ~ crossfit_exposure_for(.x, .y))
   )
 
-print(crossfit_specs, n = 20)
+## `grouping` is `all` throughout, so the mixture members are that window's
+## pollutant columns.
+crossfit_vars <- crossfit_specs$window |> purrr::map(pollutants_for_window)
+
+print(crossfit_specs, n = 40)
 
 system.time({
-  crossfit_fits <- crossfit_specs |>
-    purrr::pmap(function(covar_set, grouping, method, study, prefix, comp_name){
-      message("\n  ", comp_name, " [", covar_set, "]")
+  crossfit_fits <- seq_len(nrow(crossfit_specs)) |>
+    purrr::map(function(i){
+      spec <- crossfit_specs[i, ]
+      vars <- crossfit_vars[[i]]
 
-      data <- if (study == "cox") {
-        dat_cox_list[[covar_set]]
+      message("\n  ", spec$comp_name, " [", spec$covar_set, "] over ",
+              length(vars), " pollutants")
+
+      data <- if (spec$study == "cox") {
+        dat_cox_list[[spec$covar_set]]
       } else {
-        dat_total_list[[covar_set]]
+        dat_total_list[[spec$covar_set]]
       }
 
       crossfit_composite(
         data          = data,
-        vars          = exp_groups[[grouping]],
-        covars_weight = covars_weight_list[[covar_set]],
-        method        = method,
+        vars          = vars,
+        covars_weight = covars_weight_list[[spec$covar_set]],
+        method        = spec$method,
         k             = K_FOLDS,
         b_wqs         = B_WQS,
         rh_wqs        = RH_WQS,
@@ -277,20 +354,26 @@ crossfit_df_list <- names(covars_weight_list) |>
 
 # Fold-level weights ---------------------------------------------------------
 
-crossfit_weights <- crossfit_specs |>
-  dplyr::mutate(idx = dplyr::row_number()) |>
-  purrr::pmap(function(covar_set, grouping, method, study, prefix,
-                       comp_name, idx){
-    crossfit_fits[[idx]]$weights |>
-      dplyr::mutate(covar_set = covar_set,
-                    composite = comp_name,
-                    pollutant = str_remove(pollutant, "^exp_"),
+## `pollutant` is stripped back to the bare name -- exp_benzene_w3 -> benzene --
+## so the same pollutant lines up across windows in the summary table and the
+## stability plot. Which window a row belongs to is carried by `window`, not by
+## the pollutant name.
+crossfit_weights <- seq_len(nrow(crossfit_specs)) |>
+  purrr::map(function(i){
+    spec <- crossfit_specs[i, ]
+    crossfit_fits[[i]]$weights |>
+      dplyr::mutate(covar_set = spec$covar_set,
+                    composite = spec$comp_name,
+                    window    = dplyr::if_else(spec$window == "", "w5",
+                                               spec$window),
+                    pollutant = str_remove(pollutant, "^exp_") |>
+                      str_remove(paste0("_", spec$window, "$")),
                     .before = 1)
   }) |>
   purrr::list_rbind()
 
 crossfit_weight_summary <- crossfit_weights |>
-  dplyr::group_by(covar_set, composite, pollutant) |>
+  dplyr::group_by(covar_set, composite, window, pollutant) |>
   dplyr::summarise(
     mean_weight = round(mean(weight), 4),
     sd_weight   = round(stats::sd(weight), 4),
@@ -306,8 +389,11 @@ rev_save_table(crossfit_weight_summary, "crossfit_weights_summary",
 
 ## Fold-to-fold spread in the weights is itself the stability evidence
 ## Reviewer 1 asked for at the end of major comment 1.
+## Every window, so the figure answers "are the weights stable" and "do they
+## move with the averaging window" in one place. Faceted by composite, which
+## now carries the window in its name.
 weight_stability_plot <- crossfit_weights |>
-  dplyr::filter(covar_set == "covar", str_detect(composite, "_all$")) |>
+  dplyr::filter(covar_set == "covar") |>
   ggplot(aes(x = reorder(pollutant, weight), y = weight)) +
   geom_boxplot(outlier.shape = NA, fill = "grey92", width = 0.6) +
   geom_jitter(width = 0.12, alpha = 0.7, size = 1.6, colour = "#4C72B0") +
@@ -322,7 +408,7 @@ weight_stability_plot <- crossfit_weights |>
   theme(plot.title = element_text(face = "bold"))
 
 rev_save_plot(weight_stability_plot, "crossfit_weight_stability", "composites",
-              width = 11, height = 4.5)
+              width = 14, height = 9)
 
 
 # =============================================================================
@@ -340,7 +426,10 @@ comparison_df_list <- names(covars_weight_list) |>
                     dplyr::starts_with("comp_qgcomp_")) |>
       dplyr::left_join(pca_df, by = c("rand_id", "blood_date")) |>
       dplyr::left_join(crossfit_df_list[[covar_set]],
-                       by = c("rand_id", "blood_date"))
+                       by = c("rand_id", "blood_date")) |>
+      ## The PCA window indices, so the window-versus-window pairs below can be
+      ## read off the same frame as everything else.
+      dplyr::left_join(window_pca_df, by = c("rand_id", "blood_date"))
   })
 
 comparison_pairs <- tibble::tribble(
@@ -356,6 +445,28 @@ comparison_pairs <- tibble::tribble(
   "PCA all vs cross-fitted QGcomp Cox all",         "comp_pca_all",          "comp_qgcomp_cox_cf_all"
 )
 
+## The window contrasts (R1 comment 13). Each index against its own 5-year
+## self, so the correlation isolates the averaging window: same method, same
+## weighting rule, same cohort. Reported alongside the PC1 window correlations
+## R2 already writes, which cover the unsupervised index only.
+window_comparison_pairs <- crossfit_windows |>
+  purrr::map(function(w){
+    yrs <- WINDOW_YEARS[[w]]
+    tibble::tibble(
+      comparison = c(
+        paste0("PCA all: 5-year vs ", yrs, "-year"),
+        paste0("Cross-fitted WQS all: 5-year vs ", yrs, "-year"),
+        paste0("Cross-fitted QGcomp all: 5-year vs ", yrs, "-year")),
+      a = c("comp_pca_all", "comp_wqs_cf_all", "comp_qgcomp_cf_all"),
+      b = c(paste0("comp_pca_all_", w),
+            crossfit_exposure_for("comp_wqs_cf_", w),
+            crossfit_exposure_for("comp_qgcomp_cf_", w))
+    )
+  }) |>
+  purrr::list_rbind()
+
+comparison_pairs <- dplyr::bind_rows(comparison_pairs, window_comparison_pairs)
+
 cor_pair <- function(data, a, b) {
   if (!all(c(a, b) %in% names(data))) return(NA_real_)
   ok <- stats::complete.cases(data[[a]], data[[b]])
@@ -368,8 +479,10 @@ composite_correlations <- comparison_df_list |>
     comparison_pairs |>
       dplyr::mutate(
         covar_set = covar_set,
-        n = purrr::map2_int(a, b, ~ sum(stats::complete.cases(data[[.x]],
-                                                              data[[.y]]))),
+        n = purrr::map2_int(a, b, function(x, y){
+          if (!all(c(x, y) %in% names(data))) return(NA_integer_)
+          sum(stats::complete.cases(data[[x]], data[[y]]))
+        }),
         r = purrr::map2_dbl(a, b, ~ cor_pair(data, .x, .y)),
         .before = 1
       )
@@ -457,7 +570,19 @@ message("\n=== Section 4: assembling combined_data_list_revision ===")
 
 ## Drop every composite from the submitted analysis and attach the revision
 ## exposures, so the downstream scripts cannot accidentally pick up an
-## outcome-informed naive index.
+## outcome-informed naive index. The window objects were loaded at the top of
+## the script, where the cross-fitted window indices needed them.
+
+## The RAW windowed pollutant columns travel too, not just the indices built
+## from them. R4 derives the windowed single-pollutant exposures
+## (exp_*_w3_iqr) and the windowed quartile scores (exp_*_w3_q) for the
+## feature-wise QGcomp contrast from these, exactly as it derives the 5-year
+## ones from exp_benzene and friends -- so the scaling convention is the same
+## at every window and is set in one place.
+window_raw_cols <- crossfit_windows |>
+  purrr::map(pollutants_for_window) |>
+  unlist(use.names = FALSE)
+
 combined_data_list_revision <- combined_data_list_new |>
   purrr::imap(function(datalist, study){
     datalist |>
@@ -471,26 +596,69 @@ combined_data_list_revision <- combined_data_list_new |>
               dplyr::left_join(pca_df, by = c("rand_id", "blood_date")) |>
               dplyr::left_join(crossfit_df_list[[covar_name]],
                                by = c("rand_id", "blood_date")) |>
+              dplyr::left_join(window_pca_df,
+                               by = c("rand_id", "blood_date")) |>
+              dplyr::left_join(window_exposure_df,
+                               by = c("rand_id", "blood_date")) |>
               dplyr::select(dplyr::any_of(c(
                 names(data)[!str_detect(names(data), "^comp_")],
+                window_raw_cols,
                 rev_exposure_vars_list[[study]]
               )))
           })
       })
   })
 
-## Confirm every study carries exactly the exposures it should
+## Confirm every study carries exactly the exposures it should.
+##
+## Three kinds of exposure, checked three ways:
+##
+##   scored composites  built here, so checked against what was just attached
+##   feature-wise QGcomp a CONTRAST, never a column -- checked by the presence
+##                       of the raw pollutant columns its quartile scores are
+##                       derived from in R4
+##   single pollutants   not built here either. The 5-year _iqr columns come
+##                       through untouched from 3-clean_data.R; the windowed
+##                       ones are derived in R4 from the raw windowed columns
+##                       attached above, so it is the RAW column that has to be
+##                       present at this point.
 message("\nExposures available by study:")
 combined_data_list_revision |>
   purrr::iwalk(function(datalist, study){
-    present <- datalist[["all"]][["covar"]] |>
-      dplyr::select(dplyr::starts_with("comp_")) |>
-      names()
+    frame   <- datalist[["all"]][["covar"]]
+    present <- frame |> dplyr::select(dplyr::starts_with("comp_")) |> names()
     message("  ", study, ": ", paste(present, collapse = ", "))
-    missing <- setdiff(rev_exposure_vars_list[[study]], present)
+
+    wanted <- rev_exposure_vars_list[[study]]
+
+    composites <- wanted |>
+      purrr::discard(is_single_pollutant) |>
+      purrr::discard(is_qgcomp_fw)
+    missing <- setdiff(composites, present)
     if (length(missing) > 0) {
-      warning("Missing revision exposures for ", study, ": ",
+      warning("Missing revision composites for ", study, ": ",
               paste(missing, collapse = ", "))
+    }
+
+    ## What each exposure needs to be derivable in R4: an _iqr column for the
+    ## 5-year pollutants, a raw column for everything windowed and for every
+    ## feature-wise contrast.
+    needed <- c(
+      intersect(wanted, single_pollutant_exposures),
+      wanted |> purrr::keep(is_single_pollutant) |>
+        purrr::keep(~ exposure_window(.x) != "") |>
+        (\(x) stringr::str_remove(x, "_iqr$"))(),
+      wanted |> purrr::keep(is_qgcomp_fw) |>
+        purrr::map(~ pollutants_for_window(exposure_window(.x))) |>
+        unlist(use.names = FALSE)
+    ) |> unique()
+
+    missing_p <- setdiff(needed, names(frame))
+    if (length(missing_p) > 0) {
+      warning("Missing pollutant columns for ", study, ": ",
+              paste(missing_p, collapse = ", "))
+    } else if (length(needed) > 0) {
+      message("  ", study, " pollutant columns present: ", length(needed))
     }
   })
 
@@ -531,6 +699,8 @@ rev_dir("data", "processed")
 save(combined_data_list_revision,
      pca_index_list, pca_df, pca_loadings, pca_variance,
      crossfit_df_list, crossfit_weights, crossfit_weight_summary,
+     crossfit_specs, crossfit_windows,
+     window_pca_df, window_exposure_df,
      composite_correlations, composite_descriptives,
      exp_groups, K_FOLDS,
      file = rev_here("data", "processed",

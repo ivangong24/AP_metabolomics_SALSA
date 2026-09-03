@@ -162,17 +162,275 @@ make_exp_groups <- function(data) {
 ## ways: unsupervised PCA, feature-wise QGcomp, cross-fitted WQS and
 ## cross-fitted QGcomp logistic. Their earlier diagnostics are preserved under
 ## revision_output/archive/.
-rev_exposure_vars_list <- list(
-  total = c("comp_pca_all", "comp_qgcomp_fw_all",
-            "comp_wqs_cf_all", "comp_qgcomp_cf_all"),
-  cox   = "comp_qgcomp_cox_cf_all"
-)
+## SINGLE POLLUTANTS: the eight mixture components are also carried as
+## exposures in their own right -- Reviewer 1 major comment 1, which asks for
+## single-pollutant MWAS results alongside the mixture. They were run in the
+## submitted analysis (`tables/mwas_results/`), but under the pre-revision
+## covariate set, so pairing those numbers with the revision composites would
+## compare two different models. Running them here puts both sides of the
+## attribution argument on the same covariates, the same imputation and the
+## same duplicateCorrelation, which is what lets the manuscript say whether the
+## taurine association and the alanine/aspartate enrichment belong to any one
+## pollutant or only to the mixture.
+##
+## They are IQR-scaled, as in the submitted analysis, so a coefficient is the
+## difference in log2 abundance per interquartile-range increase in that
+## pollutant. Note this is NOT the per-SD scale the composites were put on in
+## R4 -- SD/IQR ranges from 0.73 (benzene) to 1.53 (butadiene) across the
+## eight, so the two scales are not interchangeable and any figure placing a
+## pollutant next to a composite has to say which it is using.
 
 ## Pollutants entering the feature-wise quantile g-computation contrast, in the
-## order R3 uses for the `all` grouping.
+## order R3 uses for the `all` grouping. The same eight are the single-pollutant
+## exposures.
 qgcomp_pollutants <- c("exp_benzene", "exp_butadiene", "exp_chromium",
                        "exp_lead", "exp_no2", "exp_nickel", "exp_pm2.5",
                        "exp_nox")
+
+single_pollutant_exposures <- paste0(qgcomp_pollutants, "_iqr")
+
+## EXPOSURE WINDOWS: Reviewer 1 major comment 13. The primary exposure averages
+## each pollutant over the five years preceding the draw. R2 rebuilds those
+## averages over a 1-, 3- and 10-year window.
+##
+## comp_pca_all_w1 and comp_pca_all_w3 are SEVEN-pollutant indices. CALINE4
+## NOx exists for model years 1998-2002 only, so 1,442 of 1,546 specimens (93%)
+## have no NOx year inside a one-year window and 701 (45%) none inside a
+## three-year window -- they would enter the mixture as the pipeline's NA -> 0
+## fill. NOx is dropped from both, and both must be reported as
+## seven-component indices. comp_pca_all_w10 carries all eight. R2 decides this
+## from a coverage threshold rather than hardcoding it.
+window_pca_exposures <- c("comp_pca_all_w1", "comp_pca_all_w3",
+                          "comp_pca_all_w10")
+
+## Backwards-compatible alias. R7 reads `window_exposures` when it derives the
+## pollutant composition of a window index from R2's loadings table.
+window_exposures <- window_pca_exposures
+
+
+## THE FULL EXPOSURE SET AT THE 3- AND 10-YEAR WINDOWS (added 2026-09-03)
+## ---------------------------------------------------------------------------
+##
+## Rebuilding only the PCA index answered "does the window matter for the
+## primary exposure", but it could not answer the question the window analysis
+## is actually asked in the same breath as major comment 1 -- whether the
+## attribution to the mixture, and to any one pollutant inside it, is a
+## property of the five-year averaging. That needs the OTHER exposures at the
+## same windows, so the 3- and 10-year windows now carry the whole set:
+##
+##   comp_wqs_cf_all_{w}      cross-fitted WQS, weights re-derived on that
+##                            window's pollutant matrix
+##   comp_qgcomp_cf_all_{w}   cross-fitted QGcomp logistic, likewise
+##   comp_qgcomp_fw_all_{w}   feature-wise QGcomp contrast over that window's
+##                            quartile-scored pollutants
+##   exp_*_{w}_iqr            that window's single pollutants
+##
+## The cross-fitted weights are RE-DERIVED per window rather than transported
+## from the five-year fit. A weight is a property of the pollutant matrix it
+## was estimated on, and carrying the five-year weights onto a ten-year matrix
+## would confound the window with the weighting -- the opposite of what the
+## PCA arm was designed to avoid.
+##
+## The 1-year window is deliberately not extended. It reaches NOx for 6.7% of
+## specimens, and at that coverage the cross-fitted weight models and the
+## single-pollutant NOx model are estimated on a near-constant column.
+MWAS_WINDOWS <- c("w3", "w10")
+
+## The 5-year primary carries no window tag. "" is that window everywhere a
+## window has to be named.
+ALL_MWAS_WINDOWS <- c("", MWAS_WINDOWS)
+
+WINDOW_YEARS <- c(w1 = 1, w3 = 3, w5 = 5, w10 = 10)
+
+## COLUMN-NAME CONVENTION. The window tag is a suffix on the RAW pollutant
+## column, so every derived name is a plain append and one rule covers all of
+## them:
+##
+##   5-year   exp_benzene       exp_benzene_iqr       exp_benzene_q
+##   3-year   exp_benzene_w3    exp_benzene_w3_iqr    exp_benzene_w3_q
+##
+## Composites tag at the end: comp_wqs_cf_all_w3, comp_qgcomp_fw_all_w10.
+
+## Which pollutants each window carries. Read back from R2's own coverage
+## decision so the rule lives in ONE place -- R2 decides it from
+## WINDOW_MIN_COVERAGE against the data, and a change there has to reach the
+## exposure list rather than being restated here. The fallback matches the
+## measured coverage documented in R2 and is used only before R2 has run.
+window_pollutant_map <- function() {
+  fallback <- list(w3  = setdiff(qgcomp_pollutants, "exp_nox"),
+                   w10 = qgcomp_pollutants)[MWAS_WINDOWS]
+
+  path <- rev_here("data", "processed", "exposure_windows_revision.RData")
+  if (!file.exists(path)) return(fallback)
+
+  env <- new.env()
+  ok <- try(load(path, envir = env), silent = TRUE)
+  if (inherits(ok, "try-error") || is.null(env$window_pca_loadings)) {
+    return(fallback)
+  }
+
+  m <- env$window_pca_loadings |>
+    dplyr::filter(window %in% MWAS_WINDOWS) |>
+    dplyr::distinct(window, pollutant) |>
+    (\(d) split(paste0("exp_", d$pollutant), d$window))()
+
+  if (!all(MWAS_WINDOWS %in% names(m))) return(fallback)
+  ## R2's table is alphabetical; keep qgcomp_pollutants' order so the contrast
+  ## terms and the panel C columns read the same at every window.
+  m[MWAS_WINDOWS] |> purrr::map(~ intersect(qgcomp_pollutants, .x))
+}
+
+WINDOW_POLLUTANTS <- window_pollutant_map()
+
+## The raw pollutant columns of one window. window = "" is the 5-year primary.
+pollutants_for_window <- function(window = "") {
+  if (identical(window, "")) return(qgcomp_pollutants)
+  paste0(WINDOW_POLLUTANTS[[window]], "_", window)
+}
+
+single_pollutant_exposures_for <- function(window = "") {
+  paste0(pollutants_for_window(window), "_iqr")
+}
+
+qgcomp_q_names_for <- function(window = "") {
+  paste0(pollutants_for_window(window), "_q")
+}
+
+qgcomp_fw_exposure_for <- function(window = "") {
+  if (identical(window, "")) "comp_qgcomp_fw_all"
+  else paste0("comp_qgcomp_fw_all_", window)
+}
+
+crossfit_exposure_for <- function(prefix, window = "") {
+  if (identical(window, "")) paste0(prefix, "all")
+  else paste0(prefix, "all_", window)
+}
+
+## Every window's set, flattened, for the membership tests below.
+all_single_pollutant_exposures <- ALL_MWAS_WINDOWS |>
+  purrr::map(single_pollutant_exposures_for) |>
+  unlist(use.names = FALSE)
+
+all_qgcomp_fw_exposures <- ALL_MWAS_WINDOWS |>
+  purrr::map_chr(qgcomp_fw_exposure_for)
+
+all_raw_pollutants <- ALL_MWAS_WINDOWS |>
+  purrr::map(pollutants_for_window) |>
+  unlist(use.names = FALSE)
+
+## The window an exposure name belongs to, "" for the 5-year primary.
+##
+## Only MWAS_WINDOWS are matched, so comp_pca_all_w1 reports "" -- there is no
+## 1-year single-pollutant or cross-fitted arm for it to be matched against,
+## and reporting "w1" here would send the combined panel looking for models
+## that were never fitted.
+exposure_window <- function(exposure_var) {
+  x <- as.character(exposure_var)
+  pat <- paste0("_(", paste(MWAS_WINDOWS, collapse = "|"), ")(_iqr|_q)?$")
+  tag <- stringr::str_match(x, pat)[, 2]
+  ifelse(is.na(tag), "", tag)
+}
+
+## The averaging window of an exposure IN YEARS, whatever its name shape.
+##
+## Distinct from exposure_window(), which reports only the windows that carry
+## their own fitted exposure set. comp_pca_all_w1 is a one-year index but has
+## no one-year single-pollutant arm to be matched against, so exposure_window()
+## calls it "" while this reports 1 -- which is what a figure has to say.
+exposure_window_years <- function(exposure_var) {
+  tag <- stringr::str_match(as.character(exposure_var),
+                            "_(w[0-9]+)(_iqr|_q)?$")[, 2]
+  ifelse(is.na(tag), 5, unname(WINDOW_YEARS[tag]))
+}
+
+## The same exposure at the 5-year primary window: the name with its tag
+## removed. Used for labels and for the window-versus-window comparisons.
+untagged_exposure <- function(exposure_var) {
+  x <- as.character(exposure_var)
+  w <- exposure_window(x)
+  out <- purrr::map2_chr(x, w, function(nm, tag){
+    if (identical(tag, "")) return(nm)
+    stringr::str_remove(nm, paste0("_", tag, "(?=(_iqr|_q)?$)"))
+  })
+  out
+}
+
+## The 3- and 10-year arms, in the same order the 5-year exposures appear in
+## so a table or a facet strip reads window-by-window.
+window_mwas_exposures <- MWAS_WINDOWS |>
+  purrr::map(function(w){
+    c(qgcomp_fw_exposure_for(w),
+      crossfit_exposure_for("comp_wqs_cf_", w),
+      crossfit_exposure_for("comp_qgcomp_cf_", w),
+      single_pollutant_exposures_for(w))
+  }) |>
+  unlist(use.names = FALSE)
+
+rev_exposure_vars_list <- list(
+  total = c("comp_pca_all", "comp_qgcomp_fw_all",
+            "comp_wqs_cf_all", "comp_qgcomp_cf_all",
+            single_pollutant_exposures, window_pca_exposures,
+            window_mwas_exposures),
+  cox   = "comp_qgcomp_cox_cf_all"
+)
+
+## Populations each exposure is fitted in.
+##
+## The three cognitive strata -- `all`, `no demcind`, `demcind` -- carry
+## everything. `all predx` (the post-diagnosis sensitivity population, R1
+## comment 2) carries the 5-year composites and the PCA window indices only.
+##
+## THE SINGLE POLLUTANTS ARE NO LONGER `all`-ONLY (changed 2026-09-03). They
+## were, on the argument that the attribution question is about the primary
+## stratum. But the single-pollutant half of the combined panel then showed
+## full-cohort estimates beside a stratum-specific index, and -- once the 3-
+## and 10-year windows carried their own pollutants -- five-year estimates
+## beside a ten-year index. Both mismatches are invisible in the figure. They
+## are fitted in all three strata at all three windows now, so panel C is
+## matched to the stratum AND the window of the index it sits beside.
+##
+## `all predx` is deliberately left out of the widening. It is a row filter on
+## `all` whose only purpose is the post-diagnosis sensitivity check, and every
+## exposure added there is another cell in the pathway grid and another model
+## in the multiplicity count Reviewer 1 comment 4 is about.
+STRATA_POPULATIONS <- c("all", "no demcind", "demcind")
+
+## Kept as an alias: R4 and R7 refer to the old name in comments and a stale
+## reference should not be a silent NULL.
+RESTRICTED_POPULATIONS <- STRATA_POPULATIONS
+
+restricted_exposures <- c(single_pollutant_exposures, window_mwas_exposures)
+
+is_restricted_exposure <- function(exposure_var) {
+  as.character(exposure_var) %in% restricted_exposures
+}
+
+is_single_pollutant <- function(exposure_var) {
+  as.character(exposure_var) %in% all_single_pollutant_exposures
+}
+
+## The exposure set for one study x population cell.
+##
+## Every stage of the revision -- design matrices, PLS, Mummichog input,
+## figures -- iterates over exposures inside a population loop, so this is the
+## one place that decides which exposures a cell carries. `available` lets a
+## caller intersect with what a particular object actually holds.
+exposures_for <- function(study, population, available = NULL) {
+  ## R4 narrows rev_exposure_vars_list to the columns actually present in the
+  ## analysis frames and saves the result as exposure_vars_list, which R6 and
+  ## R7 load back. Prefer it when it exists so a missing column is never
+  ## silently promised downstream.
+  exps <- if (exists("exposure_vars_list", inherits = TRUE)) {
+    get("exposure_vars_list")[[study]]
+  } else {
+    rev_exposure_vars_list[[study]]
+  }
+  if (!is.null(available)) exps <- intersect(exps, available)
+  if (!population %in% STRATA_POPULATIONS) {
+    exps <- exps[!is_restricted_exposure(exps)]
+  }
+  exps
+}
 
 QGCOMP_FW_EXPOSURE <- "comp_qgcomp_fw_all"
 QGCOMP_FW_Q        <- 4
@@ -189,15 +447,25 @@ qgcomp_q_names     <- paste0(qgcomp_pollutants, "_q")
 ## limma contrast rather than by calling qgcomp per feature keeps
 ## duplicateCorrelation for the repeated draws and the eBayes moderation,
 ## neither of which qgcomp provides.
+## One per window: comp_qgcomp_fw_all is the 5-year contrast,
+## comp_qgcomp_fw_all_w3 and _w10 the same estimand over their own window's
+## quartile-scored pollutants.
 is_qgcomp_fw <- function(exposure_var) {
-  identical(as.character(exposure_var), QGCOMP_FW_EXPOSURE)
+  as.character(exposure_var) %in% all_qgcomp_fw_exposures
 }
 
 ## Quartile-score each pollutant (0 .. q-1) within the frame it will be modelled
 ## in, mirroring qgcomp's default breaks. Ties collapse the upper categories
 ## rather than erroring, which matters for the small demcind strata.
+##
+## Pollutants absent from the frame are skipped rather than erroring: the cox
+## frames carry no windowed exposure columns, and the 3-year window carries no
+## NOx.
 add_qgcomp_quantiles <- function(data, pollutants = qgcomp_pollutants,
                                  q = QGCOMP_FW_Q) {
+  pollutants <- intersect(pollutants, names(data))
+  if (length(pollutants) == 0) return(data)
+
   data |>
     dplyr::mutate(dplyr::across(
       dplyr::all_of(pollutants),
@@ -210,13 +478,35 @@ add_qgcomp_quantiles <- function(data, pollutants = qgcomp_pollutants,
       .names = "{.col}_q"))
 }
 
+## Every window's quartile scores, in one pass over the frame.
+add_all_qgcomp_quantiles <- function(data, windows = ALL_MWAS_WINDOWS,
+                                     q = QGCOMP_FW_Q) {
+  purrr::reduce(windows,
+                function(d, w) add_qgcomp_quantiles(d, qgcomp_pollutants_raw(w),
+                                                    q = q),
+                .init = data)
+}
+
+## Raw pollutant columns of a window, guarded so a caller can ask for a window
+## the run does not carry.
+qgcomp_pollutants_raw <- function(window = "") {
+  if (!identical(window, "") && is.null(WINDOW_POLLUTANTS[[window]])) {
+    return(character(0))
+  }
+  pollutants_for_window(window)
+}
+
 ## Contrast that sums the quantized-pollutant coefficients into psi.
-qgcomp_psi_contrast <- function(design_matrix) {
-  w <- as.numeric(colnames(design_matrix) %in% qgcomp_q_names)
-  if (sum(w) != length(qgcomp_q_names)) {
+##
+## `window` names which set of quantized terms to sum. The design for
+## comp_qgcomp_fw_all_w3 carries exp_*_w3_q and no others, so summing the
+## 5-year terms there would silently sum nothing -- hence the hard stop.
+qgcomp_psi_contrast <- function(design_matrix, window = "") {
+  q_names <- qgcomp_q_names_for(window)
+  w <- as.numeric(colnames(design_matrix) %in% q_names)
+  if (sum(w) != length(q_names)) {
     stop("Design is missing quantized pollutant terms: ",
-         paste(setdiff(qgcomp_q_names, colnames(design_matrix)),
-               collapse = ", "))
+         paste(setdiff(q_names, colnames(design_matrix)), collapse = ", "))
   }
   matrix(w, ncol = 1,
          dimnames = list(colnames(design_matrix), "psi"))
@@ -228,12 +518,246 @@ rev_exposure_labels <- c(
   comp_qgcomp_fw_all       = "QGcomp all toxicants (feature-wise)",
   comp_wqs_cf_all          = "WQS all toxicants (cross-fitted)",
   comp_qgcomp_cf_all       = "QGcomp all toxicants (cross-fitted)",
-  comp_qgcomp_cox_cf_all   = "QGcomp Cox all toxicants (cross-fitted)"
+  comp_qgcomp_cox_cf_all   = "QGcomp Cox all toxicants (cross-fitted)",
+  ## Single pollutants, per IQR. Labels match scripts/7-visualization.R so the
+  ## revision figures read the same as the submitted ones.
+  exp_benzene_iqr          = "Benzene",
+  exp_butadiene_iqr        = "1,3-Butadiene",
+  exp_chromium_iqr         = "Chromium",
+  exp_lead_iqr             = "Lead",
+  exp_no2_iqr              = "NO2",
+  exp_nickel_iqr           = "Nickel",
+  `exp_pm2.5_iqr`          = "PM2.5",
+  exp_nox_iqr              = "NOx",
+  ## Exposure-window sensitivity (R1 comment 13). The 5-year window is the
+  ## primary comp_pca_all above.
+  comp_pca_all_w1          = "PCA, 1-year window (7 pollutants)",
+  comp_pca_all_w3          = "PCA, 3-year window (7 pollutants)",
+  comp_pca_all_w10         = "PCA, 10-year window"
 )
 
+## The 3- and 10-year arms take their 5-year label with the window appended,
+## derived rather than restated so a change to a base label reaches all three
+## windows. A composite whose window carries fewer than eight pollutants says
+## so, exactly as the PCA window labels above do -- comparing a seven-component
+## index with an eight-component one as though the window were the only
+## difference is the mistake the annotation is there to prevent.
+rev_exposure_labels <- c(
+  rev_exposure_labels,
+  MWAS_WINDOWS |>
+    purrr::map(function(w){
+      exps <- c(qgcomp_fw_exposure_for(w),
+                crossfit_exposure_for("comp_wqs_cf_", w),
+                crossfit_exposure_for("comp_qgcomp_cf_", w),
+                single_pollutant_exposures_for(w))
+      base <- unname(rev_exposure_labels[untagged_exposure(exps)])
+      n_p  <- length(WINDOW_POLLUTANTS[[w]])
+      note <- ifelse(startsWith(exps, "comp_") & n_p < length(qgcomp_pollutants),
+                     paste0(" (", n_p, " pollutants)"), "")
+      stats::setNames(
+        paste0(base, ", ", WINDOW_YEARS[[w]], "-year window", note),
+        exps)
+    }) |>
+    unlist()
+)
+
+## Always character, including for zero-length input. ifelse() returns
+## logical(0) when its test is empty, which is not a labelling problem until
+## the result is joined against a character column -- dplyr then refuses with
+## "Can't join `x$pollutant` with `y$pollutant` due to incompatible types",
+## from a figure whose only fault was that nothing passed its filter.
 rev_label <- function(exp_name) {
-  ifelse(exp_name %in% names(rev_exposure_labels),
-         rev_exposure_labels[exp_name], exp_name)
+  if (length(exp_name) == 0) return(character(0))
+  as.character(ifelse(exp_name %in% names(rev_exposure_labels),
+                      rev_exposure_labels[exp_name], exp_name))
+}
+
+## Population labels, short enough for a panel subtitle or a facet strip.
+rev_population_labels <- c(
+  "all"        = "All",
+  "no demcind" = "No dem/CIND",
+  "demcind"    = "Dem/CIND",
+  "all predx"  = "All, pre-diagnosis"
+)
+
+rev_population_label <- function(population) {
+  if (length(population) == 0) return(character(0))
+  as.character(ifelse(population %in% names(rev_population_labels),
+                      rev_population_labels[population], population))
+}
+
+## Markdown variant, for the figure text ggtext renders --------------------
+##
+## The subscripts in NO2 and PM2.5 are part of the species name, not
+## decoration, and "PM2.5" written flat is wrong. Only the labels that need
+## one differ from rev_label(); everything else passes through, so a caller
+## can use rev_label_md() everywhere it renders markdown without special-
+## casing.
+##
+## Plain-text callers -- table columns, glue strings, file names -- must keep
+## using rev_label(). An <sub> tag in a spreadsheet cell is worse than a flat
+## label.
+## Built from rev_exposure_labels rather than listed, so the windowed variants
+## (exp_no2_w3_iqr, exp_pm2.5_w10_iqr, ...) get their subscript too. Listing
+## them by hand is how a windowed label silently reverts to flat "PM2.5".
+rev_exposure_labels_md <- (function(){
+  keep <- stringr::str_detect(names(rev_exposure_labels),
+                              "^exp_(no2|pm2\\.5)(_w[0-9]+)?_iqr$")
+  labs <- rev_exposure_labels[keep]
+  stats::setNames(
+    labs |>
+      stringr::str_replace("^NO2",    "NO<sub>2</sub>") |>
+      stringr::str_replace("^PM2\\.5", "PM<sub>2.5</sub>"),
+    names(labs))
+})()
+
+rev_label_md <- function(exp_name) {
+  if (length(exp_name) == 0) return(character(0))
+  as.character(ifelse(exp_name %in% names(rev_exposure_labels_md),
+                      rev_exposure_labels_md[exp_name], rev_label(exp_name)))
+}
+
+
+## Shared significance palette -------------------------------------------------
+##
+## ONE definition, used by the volcano, the Manhattan and the effect-estimate
+## panel alike. They previously carried near-identical palettes that differed
+## in the red only (#BE3F42 vs #B73F42). patchwork collects guides by comparing
+## them for equality, so that one-character difference was enough to make it
+## treat the two Significance legends as distinct and draw both -- which is
+## what crowded the bottom of the combined panel. Keep this shared.
+##
+## THE MIDDLE BAND IS FDR < 0.10, NOT VIP > 2 (changed 2026-09-02).
+##
+## It used to be "P < 0.05 & VIP > 2". That put a quantity with no error
+## control in the middle of a legend whose other two entries are calibrated:
+## R14 measured the empirical FDR of VIP > 2 at ~1, which is why
+## filter_significant() dropped it on 2026-09-01. Shading a band with it was
+## the last place it still carried visual weight, and a reader has no way to
+## tell a display class from a selection rule by looking. A second FDR tier
+## says something a reader can act on -- these are the features that would
+## survive a more permissive error rate -- and it nests properly inside
+## P < 0.05, which VIP never did.
+##
+## VIP has not been discarded: create_vip_manhattan() still plots it, as its
+## own figure, with its own axis, where it is labelled for what it is.
+SIG_COLORS <- c("FDR < 0.05" = "#B73F42",
+                "FDR < 0.10" = "#436C85",
+                "P < 0.05"   = "#DE9960")
+
+## Class order, shared so the volcano, Manhattan and forest cannot drift.
+SIG_LEVELS <- c(names(SIG_COLORS), "NS")
+
+## The one place the rule itself lives. Nested and calibrated: FDR < 0.05 is a
+## subset of FDR < 0.10, which is (essentially) a subset of P < 0.05.
+sig_class <- function(p_value, adj_p_value) {
+  factor(
+    dplyr::case_when(
+      adj_p_value < 0.05 ~ "FDR < 0.05",
+      adj_p_value < 0.10 ~ "FDR < 0.10",
+      p_value     < 0.05 ~ "P < 0.05",
+      TRUE               ~ "NS"),
+    levels = SIG_LEVELS)
+}
+
+
+# Identification confidence --------------------------------------------------
+
+## Schymanski et al., Environ Sci Technol 2014;48:2097-2098 -- the scheme
+## reviewers in this journal family expect:
+##
+##   1  confirmed structure (reference standard / MS-MS)
+##   2  probable structure (MS-MS spectral match to a library)
+##   3  tentative candidate(s) -- a structure is proposed but the evidence
+##      does not resolve one exact structure
+##   4  unequivocal molecular formula, no structure proposed
+##   5  exact mass only, formula not assignable
+##
+## What the two annotation routes in this study can support:
+##
+##   In-house library -- accurate mass (<=10 ppm) AND retention time (<=30 s)
+##     against authentic reference standards run on the same C18-neg /
+##     HILIC-pos methods (scripts/5-annotation.R:184). Reported as LEVEL 1.
+##     The Methods must state that MS/MS was not acquired and that
+##     identification rests on accurate mass and retention time against
+##     authentic standards -- Schymanski's Level 1 lists MS, MS/MS and RT, so
+##     the claim needs that sentence to stand on its own.
+##
+##   xMSannotator (HMDB / KEGG / LIPID MAPS) -- accurate mass plus adduct and
+##     isotope consistency, no authentic standard and no MS/MS. LEVEL 3: a
+##     structure is proposed, but mass alone does not resolve it.
+##
+## LEVEL 2 IS DELIBERATELY EMPTY. It requires an MS/MS spectral match and this
+## study acquired MS1 full scan only. An empty level is informative -- it says
+## the scheme was applied rather than the features distributed across all five
+## bins.
+##
+## LEVELS 4 AND 5 ARE NOT ASSIGNED HERE. They describe features for which no
+## structure is proposed at all, which is the ~14,500 unannotated features of
+## the ~20,125 in the feature space, not the annotated ones. Grading an
+## annotated feature down to 4 or 5 because the database returned several
+## names would say it has weaker FORMULA confidence than an unannotated
+## feature, which is backwards.
+##
+## Multiplicity is reported separately, as n_candidates, rather than folded
+## into the level: it says exactly how ambiguous an annotation is, which a
+## level number cannot.
+##
+## NOTE: the `confidence` column on the annotation frames is xMSannotator's own
+## 0-3 quality score, NOT one of these levels. Do not conflate them.
+
+## An in-house hit is not automatically one compound: 48 of the 153 in-house
+## annotations list several candidates sharing the matched mass and retention
+## time. Some are the same substance written twice or differing only in
+## stereochemistry ("Ornithine; D-Ornithine"), which accurate mass and RT
+## cannot separate anyway; others are genuinely different structures
+## ("L-Leucine; L-Isoleucine; L-Norleucine"). The first collapses to one
+## compound and keeps Level 1; the second does not, and is Level 3 -- several
+## tentative candidates, which is what Level 3 is for.
+STEREO_PREFIX <- "^(d|l|dl|r|s|rs|\\(r\\)|\\(s\\)|\\(rs\\)|\\(\\+\\)|\\(-\\)|cis|trans|allo)-"
+
+candidate_list <- function(compound) {
+  compound |>
+    stringr::str_split(";") |>
+    purrr::map(~ stringr::str_squish(.x)) |>
+    purrr::map(~ .x[.x != "" & !is.na(.x)])
+}
+
+## Distinct compounds after folding away duplicates and stereodescriptors.
+n_candidate_compounds <- function(compound) {
+  candidate_list(compound) |>
+    purrr::map_int(function(v){
+      if (length(v) == 0) return(NA_integer_)
+      length(unique(stringr::str_remove_all(
+        stringr::str_remove(stringr::str_to_lower(v),
+                            stringr::regex(STEREO_PREFIX)),
+        "[[:space:]\\-]")))
+    })
+}
+
+## What to print on a figure. The shortest candidate with its stereodescriptor
+## removed: mass and retention time cannot assign D from L, so "Tyrosine" is a
+## more honest label than "L-Tyrosine".
+candidate_display_name <- function(compound) {
+  candidate_list(compound) |>
+    purrr::map_chr(function(v){
+      if (length(v) == 0) return(NA_character_)
+      short <- v[which.min(nchar(v))]
+      out <- stringr::str_remove(short,
+                                 stringr::regex(STEREO_PREFIX,
+                                                ignore_case = TRUE))
+      paste0(toupper(substr(out, 1, 1)), substr(out, 2, nchar(out)))
+    })
+}
+
+annotation_confidence_level <- function(reference, compound) {
+  n_cand <- n_candidate_compounds(compound)
+  dplyr::case_when(
+    is.na(reference)                              ~ NA_integer_,
+    reference == "In House Library" & n_cand == 1 ~ 1L,
+    reference == "In House Library"               ~ 3L,
+    TRUE                                          ~ 3L
+  )
 }
 
 
@@ -301,16 +825,66 @@ REV_TEXT <- theme(
   plot.tag      = element_text(face = "bold", size = 26)
 )
 
+## Percent difference, for Reviewer 1 minor comment 6 -------------------------
+##
+## "consider reporting percent differences, which would also permit direct
+## comparison with Hu et al. and Qi et al., both cited in percent terms."
+##
+## Feature intensities are log2-transformed, so the limma coefficient is the
+## difference in log2 abundance per one-SD increase in the exposure index
+## (see the standardization step in R4). Back-transforming,
+##
+##     percent difference = (2^beta - 1) * 100
+##
+## The interval is built from the coefficient's own standard error, recovered
+## as beta / t, and back-transformed on the log2 scale before conversion --
+## the transform is monotone, so the bounds map directly and the interval is
+## asymmetric on the percent scale, as it should be.
+add_percent_difference <- function(df, conf = 0.95) {
+  if (!all(c("logFC", "t") %in% names(df))) return(df)
+  z  <- stats::qnorm(1 - (1 - conf) / 2)
+  se <- ifelse(is.finite(df$t) & df$t != 0, df$logFC / df$t, NA_real_)
+  df |>
+    dplyr::mutate(
+      pct_diff    = (2^.data$logFC - 1) * 100,
+      pct_diff_lo = (2^(.data$logFC - z * se) - 1) * 100,
+      pct_diff_hi = (2^(.data$logFC + z * se) - 1) * 100
+    ) |>
+    dplyr::relocate(pct_diff, pct_diff_lo, pct_diff_hi, .after = "logFC")
+}
+
+## The combined panels are 30 inches wide, so they carry larger tick numbers
+## and legend text than the standalone figures without crowding. Applied on
+## top of REV_TEXT to the individual panels, not to the assembled patchwork,
+## so the standalone volcano and Manhattan keep their own sizes.
+REV_TEXT_PANEL <- theme(
+  axis.title   = element_text(face = "bold", size = 19),
+  axis.text    = element_text(size = 18),
+  strip.text   = element_text(face = "bold", size = 19),
+  legend.title = element_text(face = "bold", size = 17),
+  legend.text  = element_text(size = 16)
+)
+
 ## Long axis titles at these sizes run into neighbouring panels -- panel C's
 ## y-axis title collided with the figure title before this. Wrap them instead
 ## of shrinking the text back down.
+##
+## Plotmath labels must be left alone. The volcano y-axis is
+## expression(-log[10](P - value)) and the Manhattan x-axis is
+## expression(bold("Mass-to-charge ratio (" * italic(m/z) * ")")); these are
+## language objects, and str_wrap() coerces them to their deparsed SOURCE,
+## so the axis then reads "-log[10](P - value)" literally. Wrap only plain
+## character labels and pass everything else through untouched.
 rev_wrap_axis_titles <- function(p, width = 38) {
-  if (!is.null(p$labels$y)) {
-    p <- p + ggplot2::labs(y = stringr::str_wrap(p$labels$y, width))
+  wrap_one <- function(lab) {
+    if (is.character(lab) && length(lab) == 1 && !is.na(lab)) {
+      stringr::str_wrap(lab, width)
+    } else {
+      lab
+    }
   }
-  if (!is.null(p$labels$x)) {
-    p <- p + ggplot2::labs(x = stringr::str_wrap(p$labels$x, width))
-  }
+  if (!is.null(p$labels$y)) p <- p + ggplot2::labs(y = wrap_one(p$labels$y))
+  if (!is.null(p$labels$x)) p <- p + ggplot2::labs(x = wrap_one(p$labels$x))
   p
 }
 

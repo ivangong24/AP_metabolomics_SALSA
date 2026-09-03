@@ -58,8 +58,15 @@
 ##        either way the consensus correlations used are written to
 ##        revision_output/tables/mwas/duplicate_correlations.xlsx.
 ##
+##        EXPOSURE-RESPONSE EXTRACT. The script also writes
+##        revision_output/data/processed/exposure_response_extract_revision.RData
+##        -- the in-house-library feature abundances plus the standardized
+##        analysis frames -- so that R7 can draw the exposure-response panels
+##        Reviewer 1 asked for without reloading the 2.8 GB feature tables.
+##
 ##        Outputs -> revision_output/{data,tables}/...
-##        Downstream: R5-annotation_revision.R, R6-pathway_revision.R
+##        Downstream: R5-annotation_revision.R, R6-pathway_revision.R,
+##                    R7-visualization_revision.R (exposure-response extract)
 ##
 ##        RUNTIME: hours to days, dominated by duplicateCorrelation and PLS.
 ##        Validate first with Sys.setenv(SALSA_REVISION_QUICK = "true").
@@ -103,6 +110,32 @@ DUPCOR_WORKERS      <- 16
 ## a clean recomputation of everything.
 RESUME              <- TRUE
 
+## ADOPT_UNKEYED_CHECKPOINTS is an ESCAPE HATCH, and it should normally be
+## FALSE.
+##
+## Model-key tracking (see partial_checkpoint) was added on 2026-09-03, at the
+## same time as the 3- and 10-year exposure arms. Checkpoints written before it
+## carry no keys, so there is no way to show that a stored fit belongs to the
+## exposure column of the same name in the current run -- and R3 re-estimates
+## the cross-fitted indices every time it runs, so "same name" is not "same
+## exposure". They are therefore refused.
+##
+## SALSA_ADOPT_UNKEYED=true accepts them on NAME ALONE. Do that only after
+## checking that the exposure columns really did not move -- for example by
+## comparing the composites in combined_data_list_revision.RData against a copy
+## taken before R3 was re-run. It is an environment variable rather than an
+## edit here precisely so that the default in the file stays safe and nobody
+## inherits the switch by forgetting to change it back. Every run from then on
+## writes keys, so this is a one-time bridge.
+ADOPT_UNKEYED_CHECKPOINTS <-
+  tolower(Sys.getenv("SALSA_ADOPT_UNKEYED", unset = "false")) %in%
+  c("true", "1", "yes")
+
+if (ADOPT_UNKEYED_CHECKPOINTS) {
+  message("SALSA_ADOPT_UNKEYED is set: keyless limma / PLS checkpoints will ",
+          "be reused on exposure name alone.")
+}
+
 PLS_NCOMP           <- 3
 FDR_THRESHOLD       <- 0.05
 VIP_THRESHOLD       <- 2
@@ -113,7 +146,19 @@ VIP_THRESHOLD       <- 2
 ## All stage objects share the nesting [study][population][covar_set][exposure],
 ## so the exposure names of a saved object can be read back and compared with
 ## what this run expects.
-checkpoint_ok <- function(path, object_names) {
+## Exposures that get a PLS model. comp_qgcomp_fw_all is a contrast, not a
+## scored column, and the single pollutants are limma-only by design (see
+## SINGLE_POLLUTANT_POPULATIONS in R1), so neither appears in the VIP lists.
+## The VIP checkpoint has to be validated against this set rather than against
+## the full exposure list, or it is rejected on every resume and PLS is rerun
+## for nothing.
+pls_eligible <- function(exposures) {
+  exposures |>
+    purrr::discard(is_qgcomp_fw) |>
+    purrr::discard(is_single_pollutant)
+}
+
+checkpoint_ok <- function(path, object_names, expected_fn = identity) {
   if (!RESUME || !file.exists(path)) return(FALSE)
 
   env <- new.env()
@@ -126,22 +171,43 @@ checkpoint_ok <- function(path, object_names) {
 
   if (!signature_ok(env, path)) return(FALSE)
 
+  ## EVERY population, not just the first.
+  ##
+  ## This used to read names(pop_list[[1]][[1]]) -- the first population of
+  ## each study, which is `all` -- and compare it against exposures_for() for
+  ## that same population. The exposure set is NOT uniform across populations
+  ## (see RESTRICTED_POPULATIONS in R1), so a change that touched only the
+  ## strata passed validation and the stale checkpoint was loaded: on
+  ## 2026-09-02 the exposure windows were widened to the cognitive strata and
+  ## R4 died in "Extracting MWAS results for total_no demcind" with a
+  ## vctrs size error, because the loaded fit carried four exposures there and
+  ## the design carried seven. Comparing the whole grid is the only check that
+  ## catches a change confined to one population.
+  exposure_grid <- function(obj, fn) {
+    obj |>
+      purrr::imap(function(pop_list, study) {
+        pop_list |>
+          purrr::imap(function(covar_ls, population) {
+            sort(as.character(fn(study, population, covar_ls)))
+          })
+      })
+  }
+
   for (nm in object_names) {
     obj <- env[[nm]]
     stored <- try(
-      purrr::map(obj, function(pop_list) names(pop_list[[1]][[1]])),
-      silent = TRUE
-    )
+      exposure_grid(obj, function(study, population, covar_ls)
+        names(covar_ls[[1]])),
+      silent = TRUE)
     if (inherits(stored, "try-error") || is.null(names(obj))) {
       warning("Checkpoint ", basename(path), " has an unexpected structure; ",
               "recomputing.", call. = FALSE)
       return(FALSE)
     }
-    expected <- exposure_vars_list[names(obj)]
-    same <- length(stored) == length(expected) &&
-      all(purrr::map2_lgl(stored, expected,
-                          ~ identical(sort(.x), sort(.y))))
-    if (!same) {
+    expected <- exposure_grid(obj, function(study, population, covar_ls)
+      expected_fn(exposures_for(study, population)))
+
+    if (!identical(stored, expected)) {
       warning("Checkpoint ", basename(path), " was built with a different ",
               "exposure set; recomputing.", call. = FALSE)
       return(FALSE)
@@ -221,6 +287,164 @@ resume_load <- function(path, object_names) {
 }
 
 
+## Partial resume -------------------------------------------------------------
+##
+## checkpoint_ok() is all-or-nothing: it compares the stored exposure grid with
+## the expected one and rejects on any difference. That is the right rule when
+## the stored VALUES would change, and the wrong one when the exposure list
+## simply grew. Widening it to the 3- and 10-year windows on 2026-09-03 would
+## otherwise have discarded every model that had not changed and recomputed the
+## whole grid to add the new cells -- days of PLS for no difference in the
+## numbers.
+##
+## A limma fit and a PLS/VIP result are per exposure and do not depend on which
+## OTHER exposures the run carries, so the stored ones can be kept and only the
+## missing cells computed. What must still match exactly is everything the
+## values DO depend on:
+##
+##   covariates    signature_ok(), as before
+##   feature space hence the REV_QUICK guard -- quick mode subsamples features
+##                 and its fits must never be mixed into a full run
+##   the exposure  a cell is reused only when the CURRENT run carries an
+##                 exposure of that name in that stratum, and the columns
+##                 behind a name are set once, above, from the study's `all`
+##                 frame
+##
+## Set RESUME <- FALSE to force everything to be recomputed.
+## MODEL KEYS. Matching names is not enough to reuse a fit. `comp_wqs_cf_all`
+## is re-estimated by R3 every time it runs, and a cross-fitted index that came
+## back even slightly different would silently pair an old fit with a new
+## exposure -- a wrong number that no check downstream could catch. So each
+## cell carries a hash of everything its result is a function of, and a stored
+## result is reused only when that hash still matches.
+##
+## For limma: the design matrix (which contains the exposure column and every
+## covariate), the consensus correlation, and the identity of the feature
+## matrix. For PLS: the exposure vector, the covariate frame and the sample
+## order.
+##
+## The feature matrix enters as its dimnames rather than its 118 MB of values.
+## Those name the features and the samples, so a changed feature set or sample
+## set is caught; a changed VALUE in an unchanged matrix is not, and cannot be
+## without hashing gigabytes on every run. The matrices come from the same
+## saved .RData on every run, and QUICK -- the one thing that does subsample
+## them -- is refused outright above.
+feature_key <- function(metabo) {
+  rlang::hash(list(rownames(metabo), colnames(metabo)))
+}
+
+partial_checkpoint <- function(path, object_name, key_name) {
+  if (!RESUME || REV_QUICK || !file.exists(path)) return(NULL)
+
+  env <- new.env()
+  ok <- try(load(path, envir = env), silent = TRUE)
+  if (inherits(ok, "try-error") || !object_name %in% ls(env)) {
+    warning("Checkpoint ", basename(path),
+            " is unreadable or incomplete; recomputing.", call. = FALSE)
+    return(NULL)
+  }
+  if (!signature_ok(env, path)) return(NULL)
+
+  if (!key_name %in% ls(env)) {
+    if (!ADOPT_UNKEYED_CHECKPOINTS) {
+      warning("Checkpoint ", basename(path), " predates model-key tracking, ",
+              "so its fits cannot be shown to belong to the current ",
+              "exposures; recomputing. Set SALSA_ADOPT_UNKEYED=true to accept ",
+              "it on name alone, but only after checking the exposure ",
+              "columns did not move.", call. = FALSE)
+      return(NULL)
+    }
+    message("ADOPTING keyless checkpoint ", basename(path),
+            " on exposure NAME alone -- this run asserts the exposure ",
+            "columns are unchanged.")
+    return(list(obj = env[[object_name]], keys = NULL, adopted = TRUE))
+  }
+
+  list(obj = env[[object_name]], keys = env[[key_name]], adopted = FALSE)
+}
+
+## What a checkpoint already holds for one study x population x covariate cell.
+prior_cell <- function(prior, study, population, covar_name) {
+  if (is.null(prior)) return(list())
+  out <- tryCatch(prior$obj[[study]][[population]][[covar_name]],
+                  error = function(e) NULL)
+  if (is.null(out) || !is.list(out) || is.null(names(out))) list() else out
+}
+
+prior_keys <- function(prior, study, population, covar_name) {
+  if (is.null(prior)) return(character(0))
+  out <- tryCatch(prior$keys[[study]][[population]][[covar_name]],
+                  error = function(e) NULL)
+  if (is.null(out)) character(0) else unlist(out)
+}
+
+## `x[[name]]` raises "subscript out of bounds" for a name that is not there --
+## for a named list as well as for an atomic vector -- so every key lookup goes
+## through this. A missing key is a reason to recompute the cell, not to abort
+## the run.
+key_of <- function(x, nm) {
+  if (is.null(x) || !nm %in% names(x)) return(NA_character_)
+  v <- x[[nm]]
+  if (length(v) != 1 || is.na(v)) NA_character_ else as.character(v)
+}
+
+## The exposures of one cell that still have to be computed, and the stored
+## results for the rest, in the order the current run expects them.
+##
+## `keys_now` is the current model key per exposure; an exposure whose key has
+## moved is recomputed even though its name is unchanged.
+split_cell <- function(prior, study, population, covar_name, wanted,
+                       keys_now) {
+  keep <- prior_cell(prior, study, population, covar_name)
+  old  <- prior_keys(prior, study, population, covar_name)
+
+  reusable <- if (isTRUE(prior$adopted)) {
+    intersect(wanted, names(keep))
+  } else {
+    intersect(wanted, names(keep)) |>
+      purrr::keep(function(e){
+        a <- key_of(old, e)
+        b <- key_of(keys_now, e)
+        !is.na(a) && !is.na(b) && identical(a, b)
+      })
+  }
+
+  stale <- setdiff(intersect(wanted, names(keep)), reusable)
+  if (length(stale) > 0) {
+    message("    ", length(stale), " stored result(s) no longer match their ",
+            "model and will be refitted: ", paste(stale, collapse = ", "))
+  }
+
+  list(keep = keep[reusable], todo = setdiff(wanted, reusable))
+}
+
+## Say what a partial resume is reusing before it starts, so a run that quietly
+## recomputes everything is visible in the log rather than only in the clock.
+report_partial <- function(prior, label, design_data_list, keys) {
+  if (is.null(prior)) {
+    message(label, ": no reusable checkpoint - computing every cell")
+    return(invisible(NULL))
+  }
+  have <- 0L
+  want <- 0L
+  design_data_list |> purrr::iwalk(function(pop_list, study){
+    pop_list |> purrr::iwalk(function(covar_ls, population){
+      covar_ls |> purrr::iwalk(function(designls, covar_name){
+        want <<- want + length(designls)
+        have <<- have + length(split_cell(
+          prior, study, population, covar_name, names(designls),
+          tryCatch(keys[[study]][[population]][[covar_name]],
+                   error = function(e) NULL))$keep)
+      })
+    })
+  })
+  message(label, ": reusing ", have, " of ", want,
+          " exposure x stratum cells from the checkpoint, computing ",
+          want - have)
+  invisible(NULL)
+}
+
+
 # Prepare exposure data for MWAS ---------------------------------------------
 
 ## R3-composites_revision.R has already restricted each study to the exposures
@@ -276,25 +500,167 @@ combined_data_list_new[PREDX_STUDIES] <-
     c(datalist, list(`all predx` = predx))
   })
 
+## Standardize the scored composites to SD = 1 -------------------------------
+##
+## Reviewer 1 minor comments 5 and 6. The composites are built on unrelated
+## scales -- comp_pca_all has SD 1.92 (prcomp scales the inputs, not the
+## resulting scores), comp_wqs_cf_all 0.79, comp_qgcomp_cf_all 0.42 -- so
+## their coefficients and discovery counts are not comparable, and a
+## coefficient "per unit" means something different for each. Dividing by the
+## SD makes every coefficient the difference in log2 abundance per one-SD
+## increase in that index, which is what the response letter states.
+##
+## This is a pure linear rescaling of the exposure: the coefficient and its
+## standard error are divided by the same constant, so t statistics, p-values
+## and FDR are unchanged to machine precision. Only the effect-size scale
+## moves.
+##
+## The SD is taken ONCE per study, from that study's `all` frame, and applied
+## to every population within it. Standardizing each stratum by its own SD
+## would make "one SD" a different quantity in each, which would silently
+## distort the subgroup-versus-full-cohort comparison in the combined panels.
+##
+## comp_qgcomp_fw_all is deliberately excluded: it is a contrast, not a scored
+## column, and psi is already in an interpretable unit (a one-quartile
+## increase in every pollutant simultaneously). Its scale is therefore not
+## comparable with the standardized indices, and the Methods should say so.
+composite_sds <- combined_data_list_new |>
+  purrr::map(function(datalist){
+    ref <- datalist[["all"]][["covar"]]
+    ref |>
+      dplyr::select(dplyr::starts_with("comp_")) |>
+      purrr::map_dbl(~ stats::sd(.x, na.rm = TRUE))
+  })
+
+combined_data_list_new <- list(combined_data_list_new, composite_sds) |>
+  purrr::pmap(function(datalist, sds){
+    datalist |>
+      purrr::map(function(data_list){
+        data_list |>
+          purrr::map(function(d){
+            for (nm in names(sds)) {
+              if (nm %in% names(d) && is.finite(sds[[nm]]) && sds[[nm]] > 0) {
+                d[[nm]] <- d[[nm]] / sds[[nm]]
+              }
+            }
+            d
+          })
+      })
+  })
+
+purrr::iwalk(composite_sds, function(sds, study){
+  message("  ", study, " composite SDs used for standardization: ",
+          paste(names(sds), round(sds, 4), sep = " = ", collapse = ", "))
+})
+
+rev_dir("tables", "composites")
+writexl::write_xlsx(
+  composite_sds |>
+    purrr::imap(function(sds, study){
+      tibble::tibble(study = study, composite = names(sds),
+                     sd_used = unname(sds))
+    }) |>
+    purrr::list_rbind(),
+  rev_here("tables", "composites", "composite_standardization_sd.xlsx"))
+
+
+## Re-derive the single-pollutant IQR scaling, once per study ------------------
+##
+## 3-clean_data.R builds exp_*_iqr as `.x / IQR(.x)` INSIDE each study x
+## population frame, so the divisor is the stratum's own IQR and
+## IQR(exp_*_iqr) == 1 in every stratum. "One IQR" is therefore a different
+## physical quantity in a subgroup than in the full cohort -- the raw NOx IQR
+## is 2.208 in total/all against 2.750 in total/demcind, a 25% gap -- which
+## would silently distort any subgroup-versus-full-cohort comparison of a
+## pollutant coefficient.
+##
+## The composites avoid this immediately above by taking the SD once from the
+## study's `all` frame and applying it everywhere. This does the same for the
+## eight pollutants, so the two conventions match.
+##
+## For total/all this is an arithmetic no-op -- the divisor IS that frame's
+## IQR -- so it does not change the current results, in which the single
+## pollutants are fitted in `all` only. It is what makes widening
+## SINGLE_POLLUTANT_POPULATIONS safe.
+##
+## Every window, not only the 5-year primary: the 3- and 10-year windows carry
+## their own single-pollutant exposures, and they get the same convention --
+## the divisor is that window's IQR in the study's `all` frame, applied
+## unchanged to every population within it.
+pollutant_iqrs <- combined_data_list_new |>
+  purrr::map(function(datalist){
+    ref <- datalist[["all"]][["covar"]]
+    intersect(all_raw_pollutants, names(ref)) |>
+      purrr::set_names() |>
+      purrr::map_dbl(~ stats::IQR(ref[[.x]], na.rm = TRUE))
+  })
+
+combined_data_list_new <- list(combined_data_list_new, pollutant_iqrs) |>
+  purrr::pmap(function(datalist, iqrs){
+    datalist |>
+      purrr::map(function(data_list){
+        data_list |>
+          purrr::map(function(d){
+            for (nm in names(iqrs)) {
+              col <- paste0(nm, "_iqr")
+              if (nm %in% names(d) && is.finite(iqrs[[nm]]) && iqrs[[nm]] > 0) {
+                d[[col]] <- d[[nm]] / iqrs[[nm]]
+              }
+            }
+            d
+          })
+      })
+  })
+
+purrr::iwalk(pollutant_iqrs, function(iqrs, study){
+  message("  ", study, " pollutant IQRs used for scaling (from the `all` ",
+          "frame): ", paste(names(iqrs), signif(iqrs, 4), sep = " = ",
+                            collapse = ", "))
+})
+
+writexl::write_xlsx(
+  pollutant_iqrs |>
+    purrr::imap(function(iqrs, study){
+      tibble::tibble(study = study, pollutant = names(iqrs),
+                     iqr_used = unname(iqrs))
+    }) |>
+    purrr::list_rbind(),
+  rev_here("tables", "composites", "pollutant_standardization_iqr.xlsx"))
+
+
 ## Add the quartile-scored pollutant columns the feature-wise QGcomp contrast
 ## needs. Breaks are taken within each analysis frame, so a stratum is scored
 ## against its own exposure distribution rather than the pooled one.
+## One set per window, so comp_qgcomp_fw_all sums exp_*_q and
+## comp_qgcomp_fw_all_w10 sums exp_*_w10_q. Windows whose columns are absent
+## (the cox frames carry none) are skipped rather than erroring.
 combined_data_list_new <- combined_data_list_new |>
   purrr::map(function(datalist){
     datalist |>
       purrr::map(function(data_list){
-        data_list |> purrr::map(add_qgcomp_quantiles)
+        data_list |> purrr::map(add_all_qgcomp_quantiles)
       })
   })
 
 exposure_vars_list <- combined_data_list_new |>
   purrr::imap(function(datalist, study){
     frame   <- datalist[["all"]][["covar"]]
+    ## Composites, plus the IQR-scaled single pollutants. The latter are not
+    ## built by R3 -- they come through from 3-clean_data.R -- so they are
+    ## matched by name against the frame rather than by prefix.
     present <- frame |> dplyr::select(starts_with("comp_")) |> colnames()
-    ## comp_qgcomp_fw_all is a contrast, not a column, so it is "present"
-    ## whenever the quantized pollutants it sums over are.
-    if (all(qgcomp_q_names %in% colnames(frame))) {
-      present <- c(present, QGCOMP_FW_EXPOSURE)
+    present <- c(present,
+                 intersect(all_single_pollutant_exposures, colnames(frame)))
+    ## The feature-wise QGcomp contrasts are not columns, so one is "present"
+    ## whenever the quantized pollutants of its window are. Checked per window:
+    ## the 3-year window carries seven quantized columns and the 10-year eight,
+    ## and a window whose columns never arrived must not be promised
+    ## downstream.
+    for (w in ALL_MWAS_WINDOWS) {
+      q_names <- qgcomp_q_names_for(w)
+      if (length(q_names) > 0 && all(q_names %in% colnames(frame))) {
+        present <- c(present, qgcomp_fw_exposure_for(w))
+      }
     }
     intersect(rev_exposure_vars_list[[study]], present)
   })
@@ -415,6 +781,96 @@ list(
   }) |>
   invisible()
 
+# Exposure-response extract for the identified metabolites ---------------------
+#
+## Reviewer 1 comment 14 asks that the freed space in the main figure carry
+## biological content, one option being "exposure-response plots for the Level 1
+## metabolites". Drawing those needs three things that exist only here: the
+## feature abundances, the sample-to-participant link, and the analysis frames
+## AFTER the SD / IQR standardization applied above. R7 loads neither the
+## feature tables (2.8 GB) nor the pre-standardization frames, so this section
+## writes a compact extract for it.
+##
+## Only the features carrying an Emory in-house-library annotation are kept.
+## That is the superset from which Level 1 is drawn -- an accurate-mass-only
+## database hit can never reach Level 1 (see annotation_confidence_level() in
+## R1) -- so the extract stays small (~150 features) and does not have to be
+## rebuilt if the confidence rule is refined in R5.
+##
+## Abundances are on the same log2 scale limma models, and the exposure columns
+## are the standardized ones the design matrices were built from, so a slope
+## drawn from this extract is in the units the coefficients are reported in.
+
+message("\n=== Exposure-response extract for the annotated features ===")
+
+load(here::here("data", "metabolomics", "annotation",
+                "annotation_cleaned_wide.RData"))
+
+inhouse_feature_ids <- list(annotation_c18_wide, annotation_hilic_wide) |>
+  purrr::map(function(annot){
+    annot |>
+      dplyr::filter(reference == "In House Library") |>
+      dplyr::pull(id) |>
+      unique()
+  }) |>
+  purrr::set_names("c18", "hilic")
+
+purrr::iwalk(inhouse_feature_ids, function(ids, platform){
+  message("  ", platform, ": ", length(ids),
+          " in-house-library features requested for the extract")
+})
+
+## Wide frame: one row per sample, one column per in-house feature, keyed by
+## the same rand_id / blood_date pair every analysis frame carries.
+build_er_abundance <- function(metabo, sample_link, feature_ids) {
+  keep <- intersect(feature_ids, rownames(metabo))
+  cols <- intersect(sample_link$file.name_new, colnames(metabo))
+  if (length(keep) == 0 || length(cols) == 0) return(NULL)
+
+  metabo[keep, cols, drop = FALSE] |>
+    as.matrix() |>
+    t() |>
+    as.data.frame() |>
+    tibble::rownames_to_column("file.name_new") |>
+    dplyr::inner_join(
+      sample_link |> dplyr::select(rand_id, blood_date, file.name_new),
+      by = "file.name_new") |>
+    dplyr::relocate(rand_id, blood_date, file.name_new)
+}
+
+list(
+  list(med_c18_raw_combat_processed, med_hil_raw_combat_processed),
+  list(sample_link_c18, sample_link_hilic),
+  inhouse_feature_ids
+) |>
+  purrr::pmap(build_er_abundance) |>
+  purrr::set_names("er_abundance_c18", "er_abundance_hilic") |>
+  list2env(.GlobalEnv)
+
+purrr::iwalk(list(c18 = er_abundance_c18, hilic = er_abundance_hilic),
+             function(df, platform){
+               message("  ", platform, " extract: ", nrow(df), " samples x ",
+                       ncol(df) - 3, " features")
+             })
+
+## The analysis frames go with it. combined_data_list_* is what the design
+## matrices were built from, so it carries the standardized composites, the
+## re-derived pollutant IQR columns, the quartile scores and every covariate --
+## which is what lets R7 residualize on exactly the model's adjustment set.
+er_data_list_c18   <- combined_data_list_c18
+er_data_list_hilic <- combined_data_list_hilic
+er_covars_list     <- covars_list_new
+
+er_extract_path <- rev_here("data", "processed",
+                            "exposure_response_extract_revision.RData")
+
+save(er_abundance_c18, er_abundance_hilic,
+     er_data_list_c18, er_data_list_hilic, er_covars_list,
+     file = er_extract_path)
+
+message("  extract -> ", er_extract_path)
+
+
 message("Exposure variables for the revision MWAS:")
 print(exposure_vars_list)
 
@@ -434,8 +890,9 @@ print(covars_list_new)
 ## comp_qgcomp_fw_all the eight quantized pollutants enter as separate terms
 ## and are collapsed to psi by a contrast after lmFit (see fit_limma).
 create_design_matrix <- function(combined_data, exposure_var, covars) {
-  exposure_terms <- if (is_qgcomp_fw(exposure_var)) qgcomp_q_names
-                    else exposure_var
+  exposure_terms <- if (is_qgcomp_fw(exposure_var)) {
+                      qgcomp_q_names_for(exposure_window(exposure_var))
+                    } else exposure_var
   formula_matrix <- as.formula(str_c("~ ",
                                      paste(exposure_terms, collapse = " + "),
                                      " + ", paste(covars, collapse = " + ")))
@@ -449,8 +906,8 @@ list(
   list("C18", "Hilic")
 ) |>
   purrr::pmap(function(combined_data_list, mode){
-    list(combined_data_list, exposure_vars_list, names(exposure_vars_list)) |>
-      purrr::pmap(function(combined_df_list, exposure_vars, study){
+    list(combined_data_list, names(combined_data_list)) |>
+      purrr::pmap(function(combined_df_list, study){
         combined_df_list |>
           purrr::imap(function(combined_dflist, population){
             list(combined_dflist, covars_list_new, names(covars_list_new)) |>
@@ -459,7 +916,11 @@ list(
                                "_", population, " in ", mode,
                                " with covariates set: ", covar_name, " ..."))
 
-                exposure_vars |>
+                ## exposures_for(), not exposure_vars_list[[study]]: the single
+                ## pollutants are fitted in `all` only, so the exposure set now
+                ## varies by population and this is the one place that decides
+                ## it. Everything downstream reads names(designls).
+                exposures_for(study, population) |>
                   purrr::set_names() |>
                   purrr::map(~ create_design_matrix(combined_data, .x, covars))
               })
@@ -514,7 +975,8 @@ if (dupcor_reusable) {
     dupcor_c18_list   <- rebroadcast(dupcor_c18_list,   design_c18_list)
     dupcor_hilic_list <- rebroadcast(dupcor_hilic_list, design_hilic_list)
     message("RESUME: stratum-level consensus correlations re-broadcast over ",
-            length(unlist(exposure_vars_list)), " exposures")
+            length(unlist(purrr::map_depth(design_c18_list, 3, names))),
+            " exposure x stratum cells")
   }
 
 } else {
@@ -750,7 +1212,8 @@ fit_limma <- function(metabolome_matrix, design_matrix, block, correlation,
   fit <- limma::lmFit(metabolome_matrix, design_matrix,
                       block = block, correlation = correlation)
   if (is_qgcomp_fw(exposure_var)) {
-    fit <- limma::contrasts.fit(fit, qgcomp_psi_contrast(design_matrix))
+    fit <- limma::contrasts.fit(
+      fit, qgcomp_psi_contrast(design_matrix, exposure_window(exposure_var)))
   }
   fit <- limma::eBayes(fit)
   return(fit)
@@ -763,69 +1226,124 @@ fit_c18_path   <- rev_here("data", "metabolomics", "results",
 fit_hilic_path <- rev_here("data", "metabolomics", "results",
                            "limma_fit_hilic_revision.RData")
 
-if (checkpoint_ok(fit_c18_path, "limma_fit_c18") &&
-    checkpoint_ok(fit_hilic_path, "limma_fit_hilic")) {
-
-  resume_load(fit_c18_path,   "limma_fit_c18")
-  resume_load(fit_hilic_path, "limma_fit_hilic")
-
-} else {
-
-  future::plan(future::multicore, workers = n_workers)
-
-  system.time({
-    list(
-      list("C18", "HILIC"),
-      list(design_c18_list, design_hilic_list),
-      list(metabo_list_c18_final, metabo_list_hilic_final),
-      list(dupcor_c18_list, dupcor_hilic_list),
-      list(combined_data_list_c18, combined_data_list_hilic)
-    ) |>
-      purrr::pmap(function(mode, design_data_list, metabo_data_list,
-                           dupcor_data_list, combined_data_list) {
-        list(design_data_list, metabo_data_list,
-             dupcor_data_list, combined_data_list, names(combined_data_list)) |>
-          purrr::pmap(function(design_list, metabo_list, dupcor_list,
-                               combined_df_list, study){
-            list(design_list, metabo_list, dupcor_list,
-                 combined_df_list, names(combined_df_list)) |>
-              purrr::pmap(function(design_ls, metabo, dupcor_ls,
-                                   combined_dflist, population){
-                list(design_ls, dupcor_ls, combined_dflist,
-                     names(combined_dflist)) |>
-                  purrr::pmap(function(designls, dupcorls,
-                                       combined_data, covar_name){
-                    message(paste0("Fitting limma models for ", mode,
-                                   " in ", study, "_", population,
-                                   " with covariates set: ",
-                                   covar_name, " ..."))
-
-                    block <- combined_data$rand_id
-
-                    list(designls, dupcorls, names(designls)) |>
-                      furrr::future_pmap(function(design, dupcor, exposure_var) {
-                        fit_limma(metabo, design,
-                                  block = block,
-                                  correlation = dupcor$consensus.correlation,
-                                  exposure_var = exposure_var)
-                      }, .options = furrr_options(seed = TRUE), .progress = TRUE)
-
-                  })
-              })
-          })
-      }) |>
-      purrr::set_names("limma_fit_c18", "limma_fit_hilic") |>
-      list2env(.GlobalEnv)
-  })
-
-
-  ## Reset to sequential plan
-  plan(sequential)
-
-  save(limma_fit_c18,   checkpoint_covar_signature, file = fit_c18_path)
-  save(limma_fit_hilic, checkpoint_covar_signature, file = fit_hilic_path)
-  message("Checkpoint written: ", fit_c18_path)
+## The model key of every limma cell this run would fit: the design matrix, the
+## consensus correlation it is fitted with, and the identity of the feature
+## matrix. See feature_key() above for why the matrix enters by its dimnames.
+build_limma_keys <- function(design_data_list, dupcor_data_list,
+                             metabo_data_list) {
+  list(design_data_list, dupcor_data_list, metabo_data_list,
+       names(design_data_list)) |>
+    purrr::pmap(function(design_list, dupcor_list, metabo_list, study){
+      list(design_list, dupcor_list, metabo_list, names(design_list)) |>
+        purrr::pmap(function(design_ls, dupcor_ls, metabo, population){
+          fkey <- feature_key(metabo)
+          list(design_ls, dupcor_ls, names(design_ls)) |>
+            purrr::pmap(function(designls, dupcorls, covar_name){
+              list(designls, dupcorls, names(designls)) |>
+                purrr::pmap(function(design, dupcor, exposure_var){
+                  rlang::hash(list(design, dupcor$consensus.correlation,
+                                   fkey, exposure_var))
+                })
+            }) |>
+            purrr::set_names(names(design_ls))
+        }) |>
+        purrr::set_names(names(design_list))
+    }) |>
+    purrr::set_names(names(design_data_list))
 }
+
+limma_keys_c18   <- build_limma_keys(design_c18_list, dupcor_c18_list,
+                                     metabo_list_c18_final)
+limma_keys_hilic <- build_limma_keys(design_hilic_list, dupcor_hilic_list,
+                                     metabo_list_hilic_final)
+
+## Partial resume: keep every fit the checkpoint already holds whose model key
+## still matches, and fit only the rest.
+prior_limma <- list(
+  C18   = partial_checkpoint(fit_c18_path,   "limma_fit_c18",
+                             "limma_keys_c18"),
+  HILIC = partial_checkpoint(fit_hilic_path, "limma_fit_hilic",
+                             "limma_keys_hilic")
+)
+
+limma_keys <- list(C18 = limma_keys_c18, HILIC = limma_keys_hilic)
+
+report_partial(prior_limma$C18,   "limma C18",   design_c18_list,
+               limma_keys_c18)
+report_partial(prior_limma$HILIC, "limma HILIC", design_hilic_list,
+               limma_keys_hilic)
+
+future::plan(future::multicore, workers = n_workers)
+
+system.time({
+  list(
+    list("C18", "HILIC"),
+    list(design_c18_list, design_hilic_list),
+    list(metabo_list_c18_final, metabo_list_hilic_final),
+    list(dupcor_c18_list, dupcor_hilic_list),
+    list(combined_data_list_c18, combined_data_list_hilic)
+  ) |>
+    purrr::pmap(function(mode, design_data_list, metabo_data_list,
+                         dupcor_data_list, combined_data_list) {
+      prior <- prior_limma[[mode]]
+
+      list(design_data_list, metabo_data_list,
+           dupcor_data_list, combined_data_list, names(combined_data_list)) |>
+        purrr::pmap(function(design_list, metabo_list, dupcor_list,
+                             combined_df_list, study){
+          list(design_list, metabo_list, dupcor_list,
+               combined_df_list, names(combined_df_list)) |>
+            purrr::pmap(function(design_ls, metabo, dupcor_ls,
+                                 combined_dflist, population){
+              list(design_ls, dupcor_ls, combined_dflist,
+                   names(combined_dflist)) |>
+                purrr::pmap(function(designls, dupcorls,
+                                     combined_data, covar_name){
+
+                  parts <- split_cell(
+                    prior, study, population, covar_name, names(designls),
+                    limma_keys[[mode]][[study]][[population]][[covar_name]])
+
+                  message(paste0("Fitting limma models for ", mode,
+                                 " in ", study, "_", population,
+                                 " with covariates set: ", covar_name,
+                                 " (", length(parts$todo), " to fit, ",
+                                 length(parts$keep), " reused) ..."))
+
+                  if (length(parts$todo) == 0) return(parts$keep)
+
+                  block <- combined_data$rand_id
+
+                  fits <- list(designls[parts$todo], dupcorls[parts$todo],
+                               parts$todo) |>
+                    furrr::future_pmap(function(design, dupcor, exposure_var) {
+                      fit_limma(metabo, design,
+                                block = block,
+                                correlation = dupcor$consensus.correlation,
+                                exposure_var = exposure_var)
+                    }, .options = furrr_options(seed = TRUE), .progress = TRUE)
+
+                  c(parts$keep, fits)[names(designls)]
+                })
+            })
+        })
+    }) |>
+    purrr::set_names("limma_fit_c18", "limma_fit_hilic") |>
+    list2env(.GlobalEnv)
+})
+
+rm(prior_limma)
+gc()
+
+## Reset to sequential plan
+plan(sequential)
+
+save(limma_fit_c18,   limma_keys_c18,   checkpoint_covar_signature,
+     file = fit_c18_path)
+save(limma_fit_hilic, limma_keys_hilic, checkpoint_covar_signature,
+     file = fit_hilic_path)
+message("Checkpoint written: ", fit_c18_path)
+message("Checkpoint written: ", fit_hilic_path)
 
 
 # Extract MWAS results -------------------------------------------------------
@@ -998,11 +1516,17 @@ fit_pls_vip <- function(X, Y, covars_df = NULL, ncomp = 3) {
 
 
 ## Run PLS for one platform, returning [study][population][covar_set][exposure]
-run_pls_platform <- function(combined_data_list, metabo_matrix_list, mode) {
+##
+## `prior_vip` is a VIP checkpoint from an earlier run. Exposures it already
+## covers are skipped, so widening the exposure list costs only the new fits
+## (see partial_checkpoint above). The returned object therefore holds the NEW
+## results only; merge_pls_cells() puts them back together with the stored
+## ones.
+run_pls_platform <- function(combined_data_list, metabo_matrix_list, mode,
+                             prior_vip = NULL, keys = NULL) {
   list(combined_data_list, metabo_matrix_list,
-       exposure_vars_list, names(exposure_vars_list)) |>
-    purrr::pmap(function(combined_df_list, metabo_list,
-                         exposure_vars, study) {
+       names(combined_data_list)) |>
+    purrr::pmap(function(combined_df_list, metabo_list, study) {
       list(combined_df_list, metabo_list, names(combined_df_list)) |>
         purrr::pmap(function(combined_dflist, metabo_matrix, population) {
           list(combined_dflist, covars_list_new, names(covars_list_new)) |>
@@ -1016,8 +1540,25 @@ run_pls_platform <- function(combined_data_list, metabo_matrix_list, mode) {
               ## a contrast across eight columns, not a scored index, so there
               ## is nothing to regress the feature matrix on -- it is skipped
               ## here and carries limma results only.
-              exposure_vars |>
-                purrr::discard(is_qgcomp_fw) |>
+              ##
+              ## The single pollutants are skipped for a different reason: they
+              ## are limma-only by design. VIP > 2 is a ranking heuristic on the
+              ## first PLS component, and it is the FDR-adjusted coefficient,
+              ## not the ranking, that carries the attribution argument. PLS is
+              ## also the long pole in this script, and eight more exposures
+              ## would roughly triple it. combine_mwas_vip fills their VIP
+              ## columns with NA, exactly as for comp_qgcomp_fw_all.
+              wanted <- exposures_for(study, population) |> pls_eligible()
+              todo   <- split_cell(
+                prior_vip, study, population, covar_name, wanted,
+                keys[[study]][[population]][[covar_name]])$todo
+
+              if (length(todo) < length(wanted)) {
+                message("  reusing ", length(wanted) - length(todo),
+                        " stored PLS result(s), fitting ", length(todo))
+              }
+
+              todo |>
                 purrr::set_names() |>
                 purrr::map(function(exp_var) {
                   fit_pls_vip(
@@ -1030,6 +1571,84 @@ run_pls_platform <- function(combined_data_list, metabo_matrix_list, mode) {
             })
         })
     })
+}
+
+## The model key of every PLS cell: the exposure vector, the covariate frame
+## and the sample order. fit_pls_vip() is a function of exactly those three
+## plus the feature matrix, whose rows check_pls_ordering() asserts are
+## file.name_new in this order -- so hashing the frame's own column covers it
+## without building the matrix first, which is the point (a fully resumed
+## platform must never pay to transpose 125 MB slices).
+build_pls_keys <- function(combined_data_list) {
+  combined_data_list |>
+    purrr::imap(function(combined_df_list, study){
+      combined_df_list |>
+        purrr::imap(function(combined_dflist, population){
+          list(combined_dflist, covars_list_new, names(covars_list_new)) |>
+            purrr::pmap(function(combined_data, covars, covar_name){
+              covars_df <- combined_data |> dplyr::select(dplyr::all_of(covars))
+              exposures_for(study, population) |>
+                pls_eligible() |>
+                purrr::set_names() |>
+                purrr::map(function(exp_var){
+                  rlang::hash(list(combined_data[[exp_var]], covars_df,
+                                   combined_data$file.name_new, exp_var))
+                })
+            }) |>
+            purrr::set_names(names(covars_list_new))
+        })
+    })
+}
+
+## Stored VIP results plus newly computed ones, in the order this run expects.
+merge_pls_cells <- function(prior, new_obj, keys) {
+  new_obj |>
+    purrr::imap(function(pop_list, study){
+      pop_list |>
+        purrr::imap(function(covar_ls, population){
+          covar_ls |>
+            purrr::imap(function(cell, covar_name){
+              wanted <- exposures_for(study, population) |> pls_eligible()
+              keep   <- split_cell(prior, study, population, covar_name,
+                                   wanted,
+                                   keys[[study]][[population]][[covar_name]])$keep
+              c(keep, cell)[wanted]
+            })
+        })
+    })
+}
+
+## The [study][population][covar_set] grid with no exposures in it, so a fully
+## resumed platform can go through merge_pls_cells() like any other and come
+## out ordered the same way.
+empty_pls_grid <- function(combined_data_list) {
+  combined_data_list |>
+    purrr::map(function(combined_df_list){
+      combined_df_list |>
+        purrr::map(function(combined_dflist){
+          names(covars_list_new) |>
+            purrr::set_names() |>
+            purrr::map(function(covar_name) list())
+        })
+    })
+}
+
+## How many PLS models a platform still owes, given what the checkpoint holds.
+## Zero means the transposed feature matrices -- ~125 MB per study x population
+## slice -- never have to be built at all.
+pls_todo_count <- function(prior, combined_data_list, keys) {
+  total <- 0L
+  combined_data_list |> purrr::iwalk(function(combined_df_list, study){
+    combined_df_list |> purrr::iwalk(function(combined_dflist, population){
+      names(covars_list_new) |> purrr::walk(function(covar_name){
+        wanted <- exposures_for(study, population) |> pls_eligible()
+        total <<- total + length(split_cell(
+          prior, study, population, covar_name, wanted,
+          keys[[study]][[population]][[covar_name]])$todo)
+      })
+    })
+  })
+  total
 }
 
 extract_vip <- function(pls_results) {
@@ -1076,28 +1695,62 @@ for (spec in pls_specs) {
   pls_path <- rev_here("data", "metabolomics", "results",
                        paste0(spec$pls_name, "_revision.RData"))
 
-  if (checkpoint_ok(vip_path, spec$vip_name)) {
-    resume_load(vip_path, spec$vip_name)
+  key_name  <- paste0("pls_keys_", spec$mode)
+  pls_keys  <- build_pls_keys(get(spec$combined))
+  prior_vip <- partial_checkpoint(vip_path, spec$vip_name, key_name)
+  n_todo    <- pls_todo_count(prior_vip, get(spec$combined), pls_keys)
+
+  if (!is.null(prior_vip) && n_todo == 0) {
+    message("RESUME: ", spec$vip_name,
+            " already covers every exposure this run carries")
+    assign(spec$vip_name,
+           merge_pls_cells(prior_vip, empty_pls_grid(get(spec$combined)),
+                           pls_keys),
+           envir = globalenv())
     next
   }
 
-  message("=== Running PLS for ", spec$mode, " ===")
+  message("=== Running PLS for ", spec$mode, " (", n_todo, " model",
+          if (n_todo == 1) "" else "s", " to fit) ===")
 
   metabo_matrix_list <- make_metabo_matrix_list(
     get(spec$metabo), get(spec$link), spec$mode)
   check_pls_ordering(get(spec$combined), metabo_matrix_list, spec$mode)
 
-  assign(spec$pls_name,
-         run_pls_platform(get(spec$combined), metabo_matrix_list, spec$mode),
-         envir = globalenv())
-  save(list = spec$pls_name, file = pls_path, envir = globalenv())
+  new_pls <- run_pls_platform(get(spec$combined), metabo_matrix_list,
+                              spec$mode, prior_vip = prior_vip,
+                              keys = pls_keys)
 
-  assign(spec$vip_name, extract_vip(get(spec$pls_name)), envir = globalenv())
-  save(list = spec$vip_name, file = vip_path, envir = globalenv())
+  ## The full PLS objects are ~9 GB per platform and are never read back --
+  ## only the VIP lists are. On a partial resume they are written to their own
+  ## file rather than over the existing one, which holds the fits this run
+  ## deliberately did not recompute; overwriting it with a subset would destroy
+  ## them.
+  assign(spec$pls_name, new_pls, envir = globalenv())
+  pls_out <- if (is.null(prior_vip)) {
+    pls_path
+  } else {
+    rev_here("data", "metabolomics", "results",
+             paste0(spec$pls_name, "_revision_added_",
+                    format(Sys.Date(), "%Y%m%d"), ".RData"))
+  }
+  ## checkpoint_covar_signature has to travel with the object: signature_ok()
+  ## rejects any checkpoint that does not carry one, so a PLS run saved without
+  ## it could never be resumed and this stage was recomputed on every run.
+  save(list = c(spec$pls_name, "checkpoint_covar_signature"),
+       file = pls_out, envir = globalenv())
+  message("PLS objects written: ", pls_out)
+
+  assign(spec$vip_name,
+         merge_pls_cells(prior_vip, extract_vip(get(spec$pls_name)), pls_keys),
+         envir = globalenv())
+  assign(key_name, pls_keys, envir = globalenv())
+  save(list = c(spec$vip_name, key_name, "checkpoint_covar_signature"),
+       file = vip_path, envir = globalenv())
   message("Checkpoint written: ", vip_path)
 
   rm(list = c(spec$pls_name), envir = globalenv())
-  rm(metabo_matrix_list)
+  rm(metabo_matrix_list, new_pls, prior_vip, pls_keys)
   gc()
 }
 
@@ -1187,9 +1840,8 @@ list(
   list(vip_c18_list, vip_hilic_list)
 ) |>
   purrr::pmap(function(mode, mwas_data_list, vip_data_list){
-    list(mwas_data_list, vip_data_list,
-         exposure_vars_list, names(mwas_data_list)) |>
-      purrr::pmap(function(mwas_list, vip_list, exposure_vars, study){
+    list(mwas_data_list, vip_data_list, names(mwas_data_list)) |>
+      purrr::pmap(function(mwas_list, vip_list, study){
         list(mwas_list, vip_list, names(mwas_list)) |>
           purrr::pmap(function(mwas_results_ls, vip_results_ls, population){
             list(mwas_results_ls, vip_results_ls, names(mwas_results_ls)) |>
@@ -1212,12 +1864,29 @@ list(
 # Filter significant metabolites ---------------------------------------------
 
 ## Function to filter significant metabolites
+##
+## FDR ONLY. VIP > 2 was removed from the selection criterion on 2026-09-01
+## after R14-pls_validation.R showed it does not survive validation
+## (Reviewer 2 comment 7):
+##
+##   - cross-validated Q2 is NEGATIVE at every component count on both
+##     platforms (best -0.003 HILIC, -0.092 C18, and worsening with more
+##     components), so the PLS has no out-of-sample predictive value;
+##   - permuting the exposure across participants 200 times puts a mean of
+##     433.5 (C18) and 448.8 (HILIC) features above VIP > 2 under the null,
+##     against 456 and 425 observed -- an empirical FDR of 0.95 and 1.06.
+##
+## VIP > 2 therefore selects noise at the rate it selects signal, and a `_sig`
+## table built on it would be ~450 noise features per model wide. The PLS is
+## retained as exploratory dimension reduction and its VIP columns are still
+## carried for description and for the figure classes, but nothing is SELECTED
+## on them. `vip_thresh` is kept in the signature so callers do not break.
 filter_significant <- function(combined_results, fdr_thresh = 0.05,
                                vip_thresh = 2) {
   combined_results |>
     purrr::map(function(df) {
       df |>
-        dplyr::filter(adj.P.Val < fdr_thresh | VIP_comp1 > vip_thresh) |>
+        dplyr::filter(adj.P.Val < fdr_thresh) |>
         dplyr::arrange(adj.P.Val)
     })
 }
@@ -1362,6 +2031,9 @@ message("MWAS analysis completed! Results saved to ",
 
 # Create summary table for all exposures -------------------------------------
 
+## NOTE: the *_vip_gt2 columns are DESCRIPTIVE only. They count features above
+## VIP > 2 but that threshold is not a selection criterion (see
+## filter_significant), because R14 shows it has an empirical FDR near 1.
 create_summary_table <- function(mwas_c18, mwas_hilic,
                                  vip_c18, vip_hilic, exposure_vars) {
   ## NA rather than 0 where no PLS model exists (comp_qgcomp_fw_all): a zero
@@ -1391,11 +2063,11 @@ create_summary_table <- function(mwas_c18, mwas_hilic,
 
 summary_table_list <- list(
   mwas_results_list_c18, mwas_results_list_hilic,
-  vip_c18_list, vip_hilic_list, exposure_vars_list,
-  names(exposure_vars_list)
+  vip_c18_list, vip_hilic_list,
+  names(mwas_results_list_c18)
 ) |>
   purrr::pmap(function(mwas_results_c18_dflist, mwas_results_hilic_dflist,
-                       vip_c18_dflist, vip_hilic_dflist, exposure_vars, study){
+                       vip_c18_dflist, vip_hilic_dflist, study){
     list(mwas_results_c18_dflist, mwas_results_hilic_dflist,
          vip_c18_dflist, vip_hilic_dflist,
          names(mwas_results_c18_dflist)) |>
@@ -1408,7 +2080,8 @@ summary_table_list <- list(
             message("Creating summary table for ", study, "_", population,
                     " [", covar_name, "] ...")
             create_summary_table(mwas_c18, mwas_hilic,
-                                 vip_c18, vip_hilic, exposure_vars) |>
+                                 vip_c18, vip_hilic,
+                                 exposures_for(study, population)) |>
               dplyr::mutate(study = study, population = population,
                             covar_set = covar_name, .before = 1)
           })
