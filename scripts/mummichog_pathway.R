@@ -55,6 +55,10 @@ library(ggrepel)
 #' @param adducts Character vector of adduct types to consider.
 #' @param min_hits Integer, minimum pathway size (default 3).
 #' @param num_permutations Integer, number of permutations (default 100).
+#' @param lib_cache Optional path to a directory holding the MetaboAnalystR
+#'   reference libraries. MetaboAnalystR caches them in the WORKING directory,
+#'   and this function gives every analysis its own working directory, so
+#'   without a shared cache each run re-downloads them. See the note below.
 #'
 #' @return A list containing:
 #'   - mSet: MetaboAnalystR mSet object
@@ -70,13 +74,43 @@ run_mummichog <- function(input_file,
                                       "M-H2O-H [1-]", "M [1+]",
                                       "M+H [1+]", "M+Na [1+]"),
                           min_hits = 3,
-                          num_permutations = 100) {
+                          num_permutations = 100,
+                          lib_cache = NULL) {
 
   # --- 1. Run MetaboAnalystR in the output directory ---
   wd_orig <- getwd()
   on.exit(setwd(wd_orig), add = TRUE)
 
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  ## REFERENCE LIBRARIES: seed the output directory from a shared cache.
+  ##
+  ## MetaboAnalystR's .get.my.lib() looks for the library file in the CURRENT
+  ## WORKING DIRECTORY and downloads it from metaboanalyst.ca only when it is
+  ## absent. Because every analysis is given its own working directory (it has
+  ## to be -- PerformPSEA writes a dozen result files with fixed names), each
+  ## one starts with an empty cache and re-downloads the same files. Across the
+  ## 236-cell revision grid that was 237 copies of hsa_mfn.qs, one per
+  ## directory, and it dominated the runtime of the whole Mummichog stage.
+  ##
+  ## Copying rather than symlinking is deliberate: MetaboAnalystR treats these
+  ## as its own working files, and a symlink would let it write back through to
+  ## the shared cache. They are under a megabyte, so a local copy costs
+  ## milliseconds against a network round trip.
+  lib_files <- c(paste0(organism, ".qs"),
+                 paste0(ion_mode, "_adduct.qs"))
+
+  if (!is.null(lib_cache)) {
+    dir.create(lib_cache, showWarnings = FALSE, recursive = TRUE)
+    for (f in lib_files) {
+      from <- file.path(lib_cache, f)
+      to   <- file.path(output_dir, f)
+      if (file.exists(from) && !file.exists(to)) {
+        file.copy(from, to, overwrite = FALSE)
+      }
+    }
+  }
+
   setwd(output_dir)
 
   mSet <- InitDataObjects("mass_all", "mummichog", FALSE, default.dpi = 300)
@@ -92,6 +126,19 @@ run_mummichog <- function(input_file,
   mSet <- PlotPeaks2Paths(mSet, "peaks_to_paths_0_", "png", 300, width = 10)
 
   setwd(wd_orig)
+
+  ## Populate the cache from whatever this run had to fetch, so the next cell
+  ## finds it locally. The first analysis of a session pays the download once;
+  ## every later one copies.
+  if (!is.null(lib_cache)) {
+    for (f in lib_files) {
+      from <- file.path(output_dir, f)
+      to   <- file.path(lib_cache, f)
+      if (file.exists(from) && !file.exists(to)) {
+        file.copy(from, to, overwrite = FALSE)
+      }
+    }
+  }
 
   # --- 2. Read the enrichment result table. PerformPSEA writes
   #        `mummichog_pathway_enrichment_mummichog.csv` with the full, nicely

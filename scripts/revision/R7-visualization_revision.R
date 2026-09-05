@@ -2067,8 +2067,16 @@ create_single_pollutant_panel <- function(study, population, covar_set,
     dplyr::mutate(
       ## Markdown, rendered by element_markdown() below: NO2 and PM2.5 carry
       ## subscripts in their names and are wrong written flat.
-      pollutant = factor(rev_label_md(pollutant),
-                         levels = rev_label_md(pollutants)),
+      ##
+      ## The WINDOW IS STRIPPED from the tick labels. Every column of this
+      ## panel is at the same window and the subtitle already names it, so
+      ## carrying it on all eight labels turned them into "Benzene, 10-year
+      ## window" repeated eight times at a 45-degree rotation -- the exact
+      ## crowding Reviewer 1 minor comment 14 is about. The species name is
+      ## what distinguishes the columns; the window is panel-level and belongs
+      ## in the subtitle, once.
+      pollutant = factor(rev_label_md(untagged_exposure(pollutant)),
+                         levels = rev_label_md(untagged_exposure(pollutants))),
       ## Symmetric fill limits so that zero is white and a positive and a
       ## negative difference of the same size read as equally strong.
       ## The same three classes the colours use elsewhere in the figure,

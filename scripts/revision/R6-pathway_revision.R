@@ -106,6 +106,50 @@ if (REV_QUICK) {
 }
 
 
+# Per-cell progress log -------------------------------------------------------
+
+## WHY A FILE AND NOT A PROGRESS BAR.
+##
+## furrr's `.progress` bar writes to the console. R0 redirects each script's
+## output to a log file, so the bar never appears there -- and `future_map`
+## only returns its results once every cell is done, so nothing reaches disk in
+## between either. The consequence, on the 2026-09-03 run: metapone ran for
+## fourteen hours with the log frozen at "236 metapone cells queued", and the
+## only way to estimate progress was to divide the workers' accumulated CPU
+## time by a separately measured per-cell cost. That is not a way to answer
+## "how much longer".
+##
+## So every cell appends one line here as it finishes. Progress is then
+## `wc -l` on the file, the rate is the timestamps, and the slow cells name
+## themselves. Short appends to a file opened in append mode are atomic on
+## macOS well beyond the length of these lines, so the six metapone workers can
+## write to one file without interleaving.
+progress_path <- function(stage) {
+  rev_dir("logs")
+  rev_here("logs", paste0(stage, "_progress_",
+                          format(Sys.Date(), "%Y%m%d"), ".log"))
+}
+
+log_cell <- function(path, stage, key, seconds, status = "ok") {
+  cat(sprintf("%s\t%s\t%s\t%s\t%.1f\n",
+              format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+              stage, key, status, seconds),
+      file = path, append = TRUE)
+}
+
+MUMMICHOG_PROGRESS <- progress_path("mummichog")
+METAPONE_PROGRESS  <- progress_path("metapone")
+
+## The shared MetaboAnalystR library cache (see run_mummichog). One directory
+## for the whole run, outside the per-cell output tree so it survives a rerun
+## that clears results.
+MUMMICHOG_LIB_CACHE <- rev_dir("metaboAnalyst", "lib_cache")
+
+message("Per-cell progress -> ", MUMMICHOG_PROGRESS)
+message("                    ", METAPONE_PROGRESS)
+message("MetaboAnalystR library cache -> ", MUMMICHOG_LIB_CACHE)
+
+
 # Create output directories --------------------------------------------------
 
 ## The directory grid comes from the MWAS results, not from R3's data list.
@@ -324,6 +368,9 @@ system.time({
                   output_dir <- rev_here("metaboAnalyst", "Output",
                                          study, population, covar_name,
                                          exp_name)
+                  cell_key <- paste(study, population, covar_name, exp_name,
+                                    sep = "|")
+                  t0 <- Sys.time()
                   result <- tryCatch(
                     run_mummichog(
                       input_file = input_file,
@@ -336,7 +383,8 @@ system.time({
                                   "M-H2O-H [1-]", "M [1+]",
                                   "M+H [1+]", "M+Na [1+]"),
                       min_hits = 3,
-                      num_permutations = MUMMICHOG_PERM
+                      num_permutations = MUMMICHOG_PERM,
+                      lib_cache = MUMMICHOG_LIB_CACHE
                     ),
                     error = function(e) {
                       warning(paste0("Mummichog failed for ", exp_name,
@@ -345,6 +393,9 @@ system.time({
                       return(NULL)
                     }
                   )
+                  log_cell(MUMMICHOG_PROGRESS, "mummichog", cell_key,
+                           as.numeric(difftime(Sys.time(), t0, units = "secs")),
+                           status = if (is.null(result)) "failed" else "ok")
                   # Remove large mum.RData to free disk space
                   mum_rdata <- file.path(output_dir, "mum.RData")
                   if (file.exists(mum_rdata)) file.remove(mum_rdata)
@@ -517,9 +568,34 @@ message("Metapone input files created in ", rev_here("Metapone", "Input"))
 ## Seeding goes through furrr's L'Ecuyer streams, so the permutation p-values
 ## are reproducible per cell and independent of how many workers ran and in
 ## what order. The sequential version set no seed at all.
+##
+## WORKER COUNT, MEASURED (2026-09-05). This was 6, which was wrong for a
+## reason worth recording: this machine is an Apple M5 Pro with 18 cores split
+## 6 "Super" + 12 "Performance", macOS fills the Super cores first, and 6
+## workers therefore sat exactly on them while twelve real cores idled through
+## a seventeen-hour stage. Neither constraint the cap was chosen against was
+## binding -- workers measure ~2.2 GB RSS, so six used 12 GB of 48.
+##
+## Benchmarked on 16 real cells at 1000 permutations, results discarded:
+##
+##   workers   per cell    throughput    236 cells
+##      6       ~1575 s     13.5 /h       ~17.5 h
+##     16       ~2650 s     21.7 /h       ~10.9 h
+##
+## SCALING IS STRONGLY SUBLINEAR: 2.7x the workers buys 1.6x the throughput,
+## because each cell runs 1.7x slower. metapone is memory-bandwidth-bound, not
+## compute-bound, and the Performance cores are slower than the Super ones.
+## Do not read "18 cores" as "3x faster". The 16 cells came back within 60 s of
+## each other (2599-2659 s), so per-cell cost is uniform and contention is the
+## whole story.
+##
+## 16 is the memory ceiling as much as the core one: 16 x 2.2 GB = 35 GB of
+## 48 GB, and the machine is effectively unusable for anything else while it
+## runs. Lower it with SALSA_METAPONE_WORKERS on a smaller box, or to leave
+## room to work.
 METAPONE_WORKERS <- as.integer(
   Sys.getenv("SALSA_METAPONE_WORKERS",
-             unset = max(1, min(6, future::availableCores() - 1))))
+             unset = max(1, min(16, future::availableCores() - 2))))
 
 message("Running metapone pathway analysis (", METAPONE_PERM,
         " permutations) on ", METAPONE_WORKERS, " workers...")
@@ -561,13 +637,18 @@ names(metapone_jobs) <- metapone_jobs |>
 
 message("  ", length(metapone_jobs), " metapone cells queued")
 
+## The workers need the log path and the writer by value: log_cell() is a
+## global function and the path is a plain string, both small.
+progress_file <- METAPONE_PROGRESS
+
 set.seed(42)
 future::plan(future::multisession, workers = METAPONE_WORKERS)
 
 system.time({
   metapone_flat <- metapone_jobs |>
     furrr::future_map(function(job) {
-      tryCatch(
+      t0 <- Sys.time()
+      out <- tryCatch(
         run_metapone(
           input_file = job$input_file,
           p_cutoff = 0.05,
@@ -583,6 +664,16 @@ system.time({
           NULL
         }
       )
+      ## Written by the WORKER, not the parent. A message() here would be
+      ## captured as a condition and only relayed when future_map collects its
+      ## results -- which is the end of the whole stage, and therefore useless
+      ## as progress.
+      log_cell(progress_file, "metapone",
+               paste(job$study, job$population, job$covar_set, job$exposure,
+                     sep = "|"),
+               as.numeric(difftime(Sys.time(), t0, units = "secs")),
+               status = if (is.null(out)) "failed" else "ok")
+      out
     },
     ## one cell per chunk: they differ in how many features pass p < 0.05, so
     ## static chunking leaves workers idle at the end.
@@ -596,7 +687,18 @@ system.time({
     ## 'ggplot'" after the permutations had already been paid for.
     .options = furrr::furrr_options(
       seed = TRUE, chunk_size = 1,
+      ##
+      ## `globals` is left at its default (automatic detection), which picks up
+      ## run_metapone(), create_metapone_plot(), METAPONE_PERM, log_cell() and
+      ## progress_file from the lambda body. Do NOT be tempted by
+      ## `globals = structure(TRUE, add = ...)`: furrr does not honour the
+      ## `add` attribute the way future's `future.globals` does -- it REPLACES
+      ## detection, and the workers then die with "could not find function
+      ## 'log_cell'" after the permutations have already been paid for.
+      ## Verified by running both forms through a two-worker future_map.
       packages = c("metapone", "ggplot2", "ggrepel", "dplyr", "tibble")),
+    ## Kept for an interactive session; in a redirected R0 run the bar never
+    ## reaches the log, which is what the per-cell progress file is for.
     .progress = TRUE)
 })
 
