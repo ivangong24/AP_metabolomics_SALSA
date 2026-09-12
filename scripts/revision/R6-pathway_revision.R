@@ -234,9 +234,12 @@ list(
                 message(paste0("Creating Mummichog input for: ",
                                study, "_", population,
                                " - ", covar_name, " (", mode, ")"))
-                ## exposures_for(): the single pollutants are fitted in `all`
-                ## only, so the exposure set varies by population.
-                exposures_for(study, population) |>
+                ## pathway_exposures_for(): the single pollutants are
+                ## fitted in the three cognitive strata and in `all predx`,
+                ## so the exposure set varies by population -- and the
+                ## `all predx` pollutants are MWAS-only, so they are excluded
+                ## here (see PREDX_EXTRA_EXPOSURES in R1).
+                pathway_exposures_for(study, population) |>
                   purrr::set_names() |>
                   purrr::map(function(exp) {
                     create_mummichog_input(
@@ -324,7 +327,7 @@ list(combined_results_list_c18, names(combined_results_list_c18)) |>
       purrr::walk(function(population) {
         names(covar_list) |>
           purrr::walk(function(covar_name) {
-            exposures_for(study, population) |>
+            pathway_exposures_for(study, population) |>
               purrr::walk(function(exp_name) {
                 rev_dir("metaboAnalyst", "Output", study,
                         population, covar_name, exp_name)

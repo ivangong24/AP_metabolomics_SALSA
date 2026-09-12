@@ -31,6 +31,11 @@
 ##              identifications, and exposure-response plots for those
 ##              metabolites
 ##          7. Combined main-text panel and the SI coefficient scatters
+##          8. Mantel-style composite-toxicant network with the composite-
+##             composite correlation inset, paired with the fold-to-fold
+##             spread of the cross-fitted WQS / QGcomp weights (Reviewer 1
+##             comment 1: correlation among the revision exposures, and
+##             weight uncertainty rather than point estimates)
 ##
 ##        Figure tree mirrors the primary pipeline:
 ##        revision_output/figures/mwas/{study}/{population}/{covar_set}/{exposure}/
@@ -1750,8 +1755,8 @@ create_covariate_scatter <- function(mwas_list_c18, mwas_list_hilic,
 ##               pollutant the index is built from, so the mixture signal can
 ##               be read against its components
 ##   D  exposure-response plots for the Level 1 metabolites -- covariate-
-##      adjusted partial residuals against the exposure, with the fitted linear
-##      slope and a loess curve so a departure from linearity is visible
+##      adjusted partial residuals against the exposure, with the fitted
+##      linear slope
 ##
 ## The metabolites are the PANEL_N_FEATURES lowest-P Level 1 identifications
 ## in that cell; panel D takes the PANEL_N_RESPONSE lowest-P of those. Both
@@ -2000,7 +2005,10 @@ panel_feature_set <- function(study, population, covar_set, exposure_name,
 ##     rather than the pollutant. The single pollutants are now fitted in all
 ##     three cognitive strata (STRATA_POPULATIONS in R1), so the panel reads
 ##     the SAME population as the rest of the figure whenever those models
-##     exist. `all predx` does not carry them and falls back to `all`.
+##     exist. `all predx` carries the 5-year pollutants too as of 2026-09-09
+##     (PREDX_EXTRA_EXPOSURES in R1), so it now reads its own models rather
+##     than falling back to `all`; the fallback remains for any population
+##     that carries no single-pollutant models.
 ##
 ##   WINDOW. A 10-year index sat beside 5-year pollutant estimates. The 3- and
 ##     10-year windows now carry their own single-pollutant models, so a
@@ -2097,36 +2105,41 @@ create_single_pollutant_panel <- function(study, population, covar_set,
       low = SIG_COLORS[["FDR < 0.10"]], mid = "white",
       high = SIG_COLORS[["FDR < 0.05"]], midpoint = 0,
       limits = c(-fill_limit, fill_limit),
-      ## Four breaks, not the default five: at the collected legend's text size
-      ## five labels ran into each other on the bar ("-10-5 0 5 10").
+      ## Four breaks, not the default five: five labels ran into each other on
+      ## the bar ("-10-5 0 5 10").
       n.breaks = 4,
       name = "% difference per IQR"
     ) +
-    ## The title fits on one line beside the bar in the collected bottom
-    ## strip, and the bar is given room to actually read as a gradient -- the
-    ## default key is the size of a discrete legend swatch.
+    ## The bar joins the collected legend strip at the foot of the figure,
+    ## beside Column and Significance, and is boxed like them (see
+    ## `panel_legend_theme` below) so the three read as three separate keys
+    ## rather than one run-on row. What tells a reader the tiles are in IQR
+    ## units is the panel's own x-axis title, not the position of the bar.
+    ##
+    ## Title BESIDE the bar, not above it: the strip is one row and a stacked
+    ## title makes this legend taller than the two it sits next to.
     guides(fill = guide_colourbar(
       title.position = "left", title.vjust = 0.85,
-      theme = theme(legend.key.width  = unit(5, "cm"),
-                    legend.key.height = unit(0.55, "cm")))) +
+      theme = theme(legend.key.width  = unit(4, "cm"),
+                    legend.key.height = unit(0.5, "cm")))) +
     scale_x_discrete(expand = c(0, 0)) +
     scale_y_discrete(expand = c(0, 0)) +
     labs(
       title = "Single-pollutant models",
-      ## The unit is named here, not only on the colour bar: the bar lives in
-      ## the collected legend strip at the foot of the figure, far from these
-      ## tiles, while the forest declares "per 1 SD" directly beneath itself.
-      ## The two halves use different increments -- an IQR is the same 25th-to
-      ## -75th percentile shift for every pollutant whatever its skew, which is
-      ## what makes the eight columns comparable with each other, whereas the
-      ## index has no physical scale and only an SD to be expressed in -- so
-      ## each half has to state its own.
       ## Two lines. The asterisk key made this longer than the tiles are wide,
       ## and it ran into the forest's subtitle to its left -- the two halves
       ## are one panel, so there is no margin between them to absorb it.
-      subtitle = paste0(pop_note, ", ", window_note, ", per IQR\n",
+      subtitle = paste0(pop_note, ", ", window_note, "\n",
                         "* P < 0.05, ** FDR < 0.10, *** FDR < 0.05"),
-      x = NULL, y = NULL
+      ## This half of panel C carries its OWN x-axis title. The forest beside
+      ## it declares "% difference per 1 SD (95% CI)" and the two halves use
+      ## different increments -- an IQR is the same 25th-to-75th percentile
+      ## shift for every pollutant whatever its skew, which is what makes the
+      ## eight columns comparable with each other, whereas the index has no
+      ## physical scale and only an SD to be expressed in. Naming the unit
+      ## under the tiles it applies to is what keeps the two readable side by
+      ## side; REV_TEXT_PANEL gives both the same 19 pt bold as panel D's.
+      x = "% difference per IQR", y = NULL
     ) +
     theme_classic() +
     theme(
@@ -2134,9 +2147,14 @@ create_single_pollutant_panel <- function(study, population, covar_set,
       plot.subtitle = element_text(size = 12, hjust = 0.5),
       axis.text.x   = element_text(angle = 45, hjust = 1),
       axis.line     = element_blank(),
-      axis.ticks    = element_blank(),
-      legend.position = "right"
-    )
+      axis.ticks    = element_blank()
+    ) +
+    ## panel_legend_theme for the position and spacing the other collected
+    ## legends use, but WITHOUT its border: a box drawn round a continuous
+    ## colour bar crowds the gradient in a way it does not crowd the discrete
+    ## keys beside it.
+    panel_legend_theme +
+    theme(legend.background = element_blank())
 }
 
 
@@ -2200,9 +2218,13 @@ create_identified_forest <- function(feature_set, exposure_name) {
 ## The partial residual is  e + beta * x  from an ordinary least squares fit of
 ## the feature on the exposure and the SAME covariate set the MWAS used, so the
 ## red line's slope IS that model's exposure coefficient and the x axis is the
-## exposure on the scale the coefficients are reported in. The loess curve is
-## the point of the panel: it shows whether the linear term the MWAS fits is a
-## fair summary of the relationship, which no volcano or Manhattan can.
+## exposure on the scale the coefficients are reported in.
+##
+## LINEAR FIT ONLY. The panel used to carry a loess curve beside the line, to
+## show whether the linear term the MWAS fits is a fair summary of the
+## relationship. At a quarter of a third of a row per facet the two curves
+## read as one thick band rather than as a comparison, so the loess was
+## dropped; the linear fit is the quantity the manuscript actually reports.
 ##
 ## Two deliberate simplifications, both display-only. The fit is OLS rather
 ## than limma's duplicateCorrelation model, so participants with two draws
@@ -2301,10 +2323,6 @@ create_exposure_response_panel <- function(study, population, covar_set,
 
   ggplot(plot_data, aes(x = x, y = partial)) +
     geom_point(colour = "grey55", alpha = 0.25, size = 1.1) +
-    geom_smooth(method = "loess", formula = y ~ x, span = 1,
-                se = TRUE, colour = SIG_COLORS[["FDR < 0.10"]],
-                fill = SIG_COLORS[["FDR < 0.10"]],
-                alpha = 0.18, linewidth = 0.8) +
     geom_smooth(method = "lm", formula = y ~ x, se = FALSE,
                 colour = SIG_COLORS[["FDR < 0.05"]], linewidth = 0.9) +
     ## Compound names run long ("5-Hydroxy-L-tryptophan") and a facet strip
@@ -2318,7 +2336,7 @@ create_exposure_response_panel <- function(study, population, covar_set,
       ## quantity -- neither is guessable from the axes.
       subtitle = glue::glue(
         "{n_features} lowest-P Level 1 features; partial residuals\n",
-        "Red: linear fit, blue: loess"),
+        "Red: linear fit"),
       ## Comma, not a second parenthesis: several labels already carry one
       ## ("PCA, 1-year window (7 pollutants)") and stacking a second reads
       ## badly.
@@ -2716,7 +2734,7 @@ create_combined_panel <- function(exposure_name, population, covar_set, study) {
   ## shared SIG_COLORS above. The volcano's Column (shape) guide has no
   ## counterpart in the Manhattan, which facets by platform instead, so it is
   ## carried alongside rather than merged; the single-pollutant tiles' fill
-  ## gradient is its own legend and joins the same strip.
+  ## gradient is its own legend and joins the same strip, boxed to match.
   layout <- purrr::reduce(row_plots, `/`) +
     patchwork::plot_layout(guides = "collect") &
     theme(legend.position = "bottom", legend.box = "horizontal",
@@ -2787,10 +2805,1425 @@ study_names |>
   })
 
 
+# =============================================================================
+# SECTION 8: MANTEL-STYLE COMPOSITE-TOXICANT NETWORK AND WEIGHT STABILITY
+# =============================================================================
+
+## The revision analogue of the Mantel-style network in
+## scripts/7-visualization.R, which anchored the SUBMITTED (naive, outcome-
+## informed) composites.
+##
+## Reviewer 1 comment 1 asks for two things that belong in one figure: the
+## correlation among the revision exposures (unsupervised PC1, cross-fitted
+## WQS, cross-fitted QGcomp, cross-fitted Cox QGcomp), and the UNCERTAINTY of
+## the WQS / QGcomp weights rather than point estimates alone.
+##
+## Panel A anchors the network on the revision composites instead:
+## toxicant-toxicant Pearson
+## correlations in the upper triangle, curves from each composite to each
+## toxicant (width = |r|, colour = p-value tier), and the composite-composite
+## correlation matrix inset at lower left.
+##
+## Panel B is the fold-to-fold weight spread, which is the stability evidence:
+## every cross-fitting fold contributes one weight per pollutant, so the SD
+## across folds and -- more tellingly -- whether a pollutant CHANGES SIGN
+## between folds says how identified the weighting is. WQS is sign-constrained
+## and cannot flip; QGcomp is not, and does.
+
+message("\n=== Section 8: composite-toxicant network ===")
+
+if (!requireNamespace("linkET", quietly = TRUE)) {
+  if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+  remotes::install_github("Hy4m/linkET", upgrade = "never")
+}
+
+## PLAIN TEXT, unlike every other figure in the revision, which carries
+## NO<sub>2</sub> / NO<sub>x</sub> / PM<sub>2.5</sub> through ggtext. linkET
+## draws the qcorrplot's species labels itself rather than as ggplot axis
+## text, so an element_markdown() on this plot is ignored and the raw
+## "<sub>" tags print verbatim. Flat names are the lesser evil here; the
+## subscripts survive everywhere the labels are ordinary axis text.
+tox_label_lookup <- c(exp_benzene_iqr   = "Benzene",
+                      exp_butadiene_iqr = "1,3-Butadiene",
+                      exp_chromium_iqr  = "Chromium",
+                      exp_nickel_iqr    = "Nickel",
+                      exp_lead_iqr      = "Lead",
+                      exp_nox_iqr       = "NOx",
+                      `exp_pm2.5_iqr`   = "PM2.5",
+                      exp_no2_iqr       = "NO2")
+
+## Short labels throughout -- the linkET anchor labels sit outside the panel
+## and long ones are clipped, and the inset needs to match them anyway.
+mix_label_lookup <- c(comp_pca_all           = "PC1",
+                      comp_wqs_cf_all        = "WQS-CF",
+                      comp_qgcomp_cf_all     = "QGcomp-CF",
+                      comp_qgcomp_cox_cf_all = "QGcomp Cox-CF")
+
+## The MAIN network anchors PC1 at all three averaging windows instead of the
+## four index types. The toxicant block behind the curves stays the 5-year
+## matrix throughout -- the primary exposure window, and the only one all
+## three anchors can be compared against on common nodes.
+##
+## The 3-year index is built from SEVEN pollutants, not eight: NOx is
+## unavailable inside a 3-year window for most specimens (see R1). Its curve
+## to NOx is therefore a correlation with a pollutant that did not enter it,
+## which is worth knowing when that curve reads thinner than its neighbours.
+## Labels kept SHORT. linkET clips the topmost anchor's label at the panel
+## edge no matter how large the left plot margin is -- the margin moves the
+## panel, not the label's offset from its node -- so "PC1 (3-yr)" lost its
+## leading character while the two below it rendered in full.
+## The window alone, without the "PC1" prefix: all three anchors ARE PC1, and
+## panels A and B name it either side of this one, so the prefix bought
+## nothing and cost the topmost label its first character.
+## The SUPPLEMENT network drops PC1: it is the main figure's anchor, and the
+## question this one answers is how the OUTCOME-INFORMED indices relate to
+## the pollutants once cross-fitted.
+index_label_lookup <- c(comp_wqs_cf_all        = "WQS-CF",
+                        comp_qgcomp_cf_all     = "QGcomp-CF",
+                        comp_qgcomp_cox_cf_all = "QGcomp Cox-CF")
+
+window_label_lookup <- c(comp_pca_all_w3  = "3-year",
+                         comp_pca_all     = "5-year",
+                         comp_pca_all_w10 = "10-year")
+
+poll_label_lookup <- c(benzene = "Benzene", butadiene = "1,3-Butadiene",
+                       chromium = "Chromium", nickel = "Nickel",
+                       lead = "Lead", nox = "NO<sub>x</sub>",
+                       `pm2.5` = "PM<sub>2.5</sub>", no2 = "NO<sub>2</sub>")
+
+## Pearson r between a composite and one pollutant, with the p-value of the
+## test of H0: rho = 0.
+##
+## TWO CAVEATS, both of which the figure caption should carry.
+##
+## 1. The test treats the 1,546 specimens as independent, but they come from
+##    952 participants and exposure is assigned at the address, so repeated
+##    draws from one person carry almost the same exposure value. The
+##    effective n is nearer 952 than 1,546 and these p-values are therefore
+##    anticonservative. Re-running one row per participant leaves every r
+##    within 0.03 and every p still below 1e-12, so no curve changes tier --
+##    but the p is smaller than the data support.
+##
+## 2. More fundamentally, a composite is a linear combination of the same
+##    pollutants it is being correlated with, so rho = 0 is not a hypothesis
+##    anyone holds. The p-value tier is close to tautological here; it is the
+##    MAGNITUDE of r, encoded as curve width, that carries the information.
+##
+## `use = "pairwise.complete.obs"` used to be passed here. cor.test() has no
+## such argument -- it went into `...` and was silently discarded -- and it
+## was never needed, since cor.test() drops incomplete pairs itself.
+cor_one <- function(x, y){
+  tst <- suppressWarnings(stats::cor.test(x, y, method = "pearson"))
+  tibble::tibble(r = unname(tst$estimate), p = tst$p.value)
+}
+
+## Composite-composite bubble matrix. `compact = TRUE` strips it down so the
+## same plot can be dropped into the network figure as an inset.
+build_mix_bubble <- function(data, compact = FALSE){
+  cor_levels <- unname(mix_label_lookup)
+  cor_long <- data |>
+    dplyr::select(dplyr::all_of(names(mix_label_lookup))) |>
+    dplyr::rename_with(~ unname(mix_label_lookup[.x])) |>
+    cor(use = "pairwise.complete.obs") |>
+    tibble::as_tibble(rownames = "var_x") |>
+    tidyr::pivot_longer(-var_x, names_to = "var_y",
+                        values_to = "correlation") |>
+    dplyr::mutate(var_x = factor(var_x, levels = cor_levels),
+                  var_y = factor(var_y, levels = cor_levels))
+
+  bubble_size <- if (compact) 6.5 else 18
+  text_size   <- if (compact) 2.4 else 5.5
+  base_size   <- if (compact) 8   else 15
+
+  ggplot(cor_long, aes(var_x, var_y)) +
+    geom_tile(fill = "white", col = "grey85") +
+    geom_point(data = dplyr::filter(cor_long,
+                                    as.integer(var_x) > as.integer(var_y)),
+               aes(fill = correlation, size = abs(correlation)),
+               colour = "black", shape = 21, stroke = 0.4) +
+    geom_text(data = dplyr::filter(cor_long,
+                                   as.integer(var_y) > as.integer(var_x)),
+              aes(label = sprintf("%.2f", correlation)),
+              colour = "grey15", size = text_size, fontface = "bold") +
+    ## `compact` is the inset form -- no colour bar, no title, tiny text.
+    ## The standalone figure needs the bar, or its bubbles decode to nothing.
+    scale_fill_gradient2(low = "#436C85", mid = "white", high = "#B73F42",
+                         midpoint = 0, limits = c(-1, 1),
+                         breaks = seq(-1, 1, 0.5), name = "Pearson r",
+                         guide = if (compact) "none" else "colourbar") +
+    scale_size_area(limits = c(0, 1), max_size = bubble_size) +
+    coord_cartesian(expand = FALSE) +
+    labs(x = NULL, y = NULL,
+         title = if (compact) "Composite-composite r" else NULL) +
+    guides(size = "none",
+           fill = if (compact) "none" else
+             guide_colourbar(title.position = "top", title.hjust = 0.5,
+                             barwidth = unit(7, "cm"),
+                             barheight = unit(0.5, "cm"),
+                             frame.colour = "grey40",
+                             ticks.colour = "grey40")) +
+    theme_minimal(base_size = base_size) +
+    theme(plot.title      = element_text(face = "bold",
+                                         size = if (compact) 8.5 else 14,
+                                         hjust = 0.5, margin = margin(b = 2)),
+          axis.text.y     = element_text(size = if (compact) 6 else 12,
+                                         colour = "grey25"),
+          axis.text.x     = element_text(size = if (compact) 6 else 12,
+                                         colour = "grey25",
+                                         angle = 30, vjust = 1, hjust = 1),
+          legend.position = if (compact) "none" else "bottom",
+          panel.grid      = element_blank(),
+          plot.background = element_rect(fill = "white", colour = "grey60",
+                                         linewidth = 0.5),
+          plot.margin     = margin(6, 8, 6, 8))
+}
+
+# PCA structure: loadings and the clustering they imply -----------------------
+
+## Built ONCE, outside the covariate loop: the unsupervised index is a
+## decomposition of the pollutant matrix alone and does not know about
+## covariates.
+##
+## This figure is what the response letter's claim rests on -- that PC1
+## "loads positively on all eight components ... so it is interpretable as a
+## single axis of overall exposure burden". A sentence asserting that is not
+## evidence; the loadings and the geometry are.
+##
+##   A  PC1 loadings, every bar on the same side of zero, with the variance
+##      PC1 explains named on the axis.
+##   B  the PC1-PC2 plane: specimen scores behind, one arrow per pollutant.
+##      Pollutants pointing the same way co-vary, which is what makes a
+##      single axis a fair summary; the spread along PC2 is what that axis
+##      discards.
+##
+## The three colours are hierarchical clustering (Ward) of the pollutants in
+## the PC1-PC2 loading plane, cut at k = 3. It is a READING AID for the
+## biplot -- it says which arrows group together -- and not a claim about
+## emission sources. Anything source-attributing would need a receptor model
+## and is not what this figure is for.
+
+message("\n=== Section 8b: PCA loadings and structure ===")
+
+pca_fit_all <- pca_index_list[["all"]]$pca_fit
+pca_pve_all <- pca_index_list[["all"]]$pve
+
+pve_lab <- function(i) paste0("PC", i, " (", round(100 * pca_pve_all[i], 1), "%)")
+
+## make_pca_index() flips PC1 so that most loadings come out positive, but it
+## flips only the vectors it returns -- the stored prcomp object keeps the
+## sign prcomp chose. Reapply the same rule, or this figure disagrees with
+## pca_loadings and with the scored index every other figure uses.
+pc1_sign <- if (sum(pca_fit_all$rotation[, 1] < 0) >
+                sum(pca_fit_all$rotation[, 1] > 0)) -1 else 1
+
+poll_label_md <- c(benzene   = "Benzene",
+                   butadiene = "1,3-Butadiene",
+                   chromium  = "Chromium",
+                   nickel    = "Nickel",
+                   lead      = "Lead",
+                   nox       = "NO<sub>x</sub>",
+                   `pm2.5`   = "PM<sub>2.5</sub>",
+                   no2       = "NO<sub>2</sub>")
+
+## The biplot labels are PLOTMATH, not markdown. Three of the arrows are
+## nearly parallel (nickel, PM2.5 and benzene all point right and slightly
+## down), so their labels collide and need ggrepel to separate them --
+## and ggrepel cannot render ggtext markdown. plotmath gives the same
+## subscripts through `parse = TRUE`; names are quoted so the comma and
+## hyphen in "1,3-Butadiene" survive parsing.
+poll_label_pm <- c(benzene   = "\"Benzene\"",
+                   butadiene = "\"1,3-Butadiene\"",
+                   chromium  = "\"Chromium\"",
+                   nickel    = "\"Nickel\"",
+                   lead      = "\"Lead\"",
+                   nox       = "NO[x]",
+                   `pm2.5`   = "PM[2.5]",
+                   no2       = "NO[2]")
+
+pca_load_df <- tibble::tibble(
+    pollutant = rownames(pca_fit_all$rotation) |> stringr::str_remove("^exp_"),
+    PC1       = unname(pca_fit_all$rotation[, 1]) * pc1_sign,
+    PC2       = unname(pca_fit_all$rotation[, 2])) |>
+  dplyr::mutate(label    = unname(poll_label_md[pollutant]),
+                label_pm = unname(poll_label_pm[pollutant]))
+
+pca_hc <- stats::hclust(
+  stats::dist(as.matrix(pca_load_df[, c("PC1", "PC2")])), method = "ward.D2")
+pca_load_df$cluster <- factor(stats::cutree(pca_hc, k = 3))
+
+CLUSTER_COLS <- c(`1` = "#B73F42", `2` = "#436C85", `3` = "#DE9960")
+
+## Scores carry their ids, so the quartile-scored exposures can be joined on
+## rather than bound by position. make_pca_index() builds `composites` from
+## the same drop_na()'d frame it fits prcomp to, in the same row order, which
+## is what makes the mutate below safe -- and the check that follows is what
+## proves it rather than assuming it.
+pca_scores_df <- pca_index_list[["all"]]$composites |>
+  dplyr::mutate(PC1 = unname(pca_fit_all$x[, 1]) * pc1_sign,
+                PC2 = unname(pca_fit_all$x[, 2])) |>
+  dplyr::select(rand_id, blood_date, PC1, PC2)
+
+stopifnot(nrow(pca_scores_df) == nrow(pca_fit_all$x))
+
+## Panel A of the network figure: the SAME PC1-PC2 plane, once per pollutant,
+## with the points coloured by that pollutant's quartile score. The quartile
+## score is the right colour quantity because it is the matrix PCA actually
+## decomposed, and because it puts all eight pollutants on one 0-3 scale, so a
+## single legend serves every facet -- raw concentrations would need eight.
+##
+## One facet per pollutant rather than one plane coloured by whichever
+## pollutant dominates: the four strongest contributors (PM2.5, benzene,
+## 1,3-butadiene, nickel) are so highly intercorrelated that a
+## dominant-pollutant colouring overplots them into an undifferentiated
+## middle, and the separation a reader sees is then mostly lead and NOx. The
+## facets show each pollutant's gradient across the plane on its own.
+pca_vars <- pca_index_list[["all"]]$vars
+
+pca_quartiles <- combined_data_list_revision[["total"]][["all"]][["covar"]] |>
+  dplyr::select(rand_id, blood_date, dplyr::all_of(pca_vars)) |>
+  tidyr::drop_na() |>
+  quantile_score_matrix(pca_vars)
+
+## Strip labels wrap, panel B's axis labels do not. "1,3-Butadiene" is the
+## longest of the eight and overruns a facet strip at this panel width, but
+## it fits on panel B's y axis, so only the strip variant is broken. The break
+## is "<br>", not "\n": ggtext renders these through gridtext, which reads
+## markdown, and a bare newline is not a line break in markdown.
+poll_label_facet <- poll_label_md
+poll_label_facet[["butadiene"]] <- "1,3-<br>Butadiene"
+
+## Facets ordered by PC1 loading, so the panel reads in the same order as the
+## loadings plot beside it and the strongest contributors come first.
+pca_facet_order <- pca_load_df |>
+  dplyr::arrange(dplyr::desc(PC1)) |>
+  dplyr::pull(pollutant)
+
+pca_facet_df <- pca_scores_df |>
+  dplyr::inner_join(pca_quartiles, by = c("rand_id", "blood_date")) |>
+  tidyr::pivot_longer(dplyr::all_of(pca_vars),
+                      names_to = "pollutant", values_to = "quartile") |>
+  dplyr::mutate(
+    pollutant = stringr::str_remove(pollutant, "^exp_"),
+    label     = factor(unname(poll_label_facet[pollutant]),
+                       levels = unname(poll_label_facet[pca_facet_order])))
+
+p_pca_facets <- ggplot(pca_facet_df, aes(PC1, PC2, colour = quartile)) +
+  geom_point(size = 0.75, alpha = 0.75) +
+  facet_wrap(~ label, nrow = 2) +
+  scale_colour_gradientn(
+    colours = c("#436C85", "#9DBBCB", "grey92", "#E39B7B", "#B73F42"),
+    limits = c(0, 3), breaks = 0:3,
+    name = "Quartile of exposure") +
+  guides(colour = guide_colourbar(title.position = "top", title.hjust = 0.5,
+                                  barwidth = unit(6, "cm"),
+                                  barheight = unit(0.45, "cm"),
+                                  frame.colour = "grey40",
+                                  ticks.colour = "grey40")) +
+  labs(x = pve_lab(1), y = pve_lab(2)) +
+  ## strip.text is left as PLAIN text here and re-declared as markdown in
+  ## rev_save_plot()'s `post`. REV_TEXT is applied first and sets a plain
+  ## element_text; ggplot2 will not merge that over an element_markdown, so
+  ## setting markdown at this point aborts the save instead of styling it.
+  theme_bw(base_size = 12) +
+  theme(strip.background = element_rect(fill = "grey92", colour = "grey60"),
+        strip.text       = element_text(face = "bold", size = 11),
+        legend.position  = "bottom",
+        panel.grid.minor = element_blank())
+
+
+p_pca_load <- pca_load_df |>
+  dplyr::mutate(label = forcats::fct_reorder(label, PC1)) |>
+  ggplot(aes(x = label, y = PC1, fill = cluster)) +
+  geom_hline(yintercept = 0, colour = "grey40") +
+  geom_col(width = 0.7, colour = "black", linewidth = 0.3, show.legend = FALSE) +
+  geom_text(aes(label = sprintf("%.3f", PC1)),
+            hjust = -0.25, size = 4, colour = "grey20") +
+  scale_fill_manual(values = CLUSTER_COLS) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.18))) +
+  coord_flip() +
+  labs(x = NULL,
+       y = paste0("Loading on ", pve_lab(1)),
+       title = "PC1 loadings",
+       subtitle = paste0("All eight pollutants load positively, so PC1 is an ",
+                         "overall-burden contrast")) +
+  theme_bw(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold", size = 15),
+        plot.subtitle = element_text(size = 11, colour = "grey25"),
+        axis.text.y   = ggtext::element_markdown(size = 12),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor   = element_blank())
+
+## Arrows are drawn in score units so both can share one pair of axes; the
+## scale factor is cosmetic and the arrow LENGTHS are therefore comparable
+## with each other but not with the point cloud.
+arrow_scale <- 0.85 * max(abs(c(pca_scores_df$PC1, pca_scores_df$PC2))) /
+  max(abs(c(pca_load_df$PC1, pca_load_df$PC2)))
+
+p_pca_biplot <- ggplot(pca_scores_df, aes(PC1, PC2)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey70") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey70") +
+  geom_point(colour = "grey65", alpha = 0.28, size = 1.1) +
+  geom_segment(data = pca_load_df,
+               aes(x = 0, y = 0,
+                   xend = PC1 * arrow_scale, yend = PC2 * arrow_scale,
+                   colour = cluster),
+               arrow = grid::arrow(length = unit(0.22, "cm"), type = "closed"),
+               linewidth = 1.1, show.legend = FALSE) +
+  ggrepel::geom_text_repel(
+    data = pca_load_df,
+    aes(x = PC1 * arrow_scale, y = PC2 * arrow_scale,
+        label = label_pm, colour = cluster),
+    parse = TRUE, size = 4.6, fontface = "bold", show.legend = FALSE,
+    seed = 42, box.padding = 0.55, point.padding = 0.3,
+    min.segment.length = Inf, max.overlaps = Inf,
+    ## Push labels away from the origin so a label never lands on the arrow
+    ## it belongs to, or on the point cloud in the middle.
+    nudge_x = pca_load_df$PC1 * arrow_scale * 0.18,
+    nudge_y = pca_load_df$PC2 * arrow_scale * 0.18) +
+  scale_colour_manual(values = CLUSTER_COLS) +
+  labs(x = pve_lab(1), y = pve_lab(2),
+       title = "Specimens and pollutants in the PC1-PC2 plane",
+       subtitle = paste0("Grey points: ", nrow(pca_scores_df),
+                         " specimens.\nArrows: pollutant loadings, coloured ",
+                         "by clustering in this plane (k = 3, a reading aid).")) +
+  ## coord_equal keeps the angles between arrows honest, which is the whole
+  ## point of a biplot; the expansion is what stops a repelled label at the
+  ## edge from being clipped.
+  coord_equal(clip = "off") +
+  scale_x_continuous(expand = expansion(mult = 0.10)) +
+  scale_y_continuous(expand = expansion(mult = 0.10)) +
+  theme_bw(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold", size = 15),
+        plot.subtitle = element_text(size = 11, colour = "grey25"),
+        plot.margin      = margin(6, 14, 6, 6),
+        panel.grid.minor = element_blank())
+
+p_pca_structure <- (p_pca_load | p_pca_biplot) +
+  patchwork::plot_layout(widths = c(1, 1.25)) +
+  patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(face = "bold", size = 18))
+
+rev_save_plot(p_pca_structure, "pca_loadings_structure", "composites",
+              width = 16, height = 7.5,
+              post = theme(axis.text.y = ggtext::element_markdown(size = 13)))
+
+rev_save_table(
+  pca_load_df |>
+    dplyr::transmute(pollutant, label_md = label,
+                     pc1_loading = round(PC1, 4),
+                     pc2_loading = round(PC2, 4),
+                     cluster = as.integer(cluster)),
+  "pca_loadings_pc1_pc2", "composites")
+
+message("  PC1 explains ", round(100 * pca_pve_all[1], 1),
+        "% and PC2 ", round(100 * pca_pve_all[2], 1), "% of the variance")
+
+
+network_cor_tables <- covar_names |>
+  purrr::set_names() |>
+  purrr::map(function(covar_set){
+
+    ## `comp_qgcomp_cox_cf_all` lives in the `cox` arm, which drops the 42
+    ## prevalent dementia/CIND cases and the 2 without follow-up, so it joins
+    ## in with NA on the remaining specimens and every correlation involving
+    ## it is taken on pairwise-complete observations.
+    df <- dplyr::full_join(
+      combined_data_list_revision[["total"]][["all"]][[covar_set]] |>
+        dplyr::select(rand_id, blood_date,
+                      dplyr::any_of(names(tox_label_lookup)),
+                      ## Raw windowed pollutants, so each windowed PC1 can be
+                      ## correlated against the pollutants of ITS OWN window.
+                      dplyr::matches("^exp_.*_(w3|w10)$"),
+                      dplyr::any_of(names(mix_label_lookup)),
+                      dplyr::any_of(names(window_label_lookup))),
+      combined_data_list_revision[["cox"]][["all"]][[covar_set]] |>
+        dplyr::select(rand_id, blood_date,
+                      dplyr::any_of("comp_qgcomp_cox_cf_all")),
+      by = c("rand_id", "blood_date"))
+
+    tox_cols    <- df |>
+      dplyr::select(dplyr::any_of(names(tox_label_lookup))) |> colnames()
+    tox_renamed <- df |>
+      dplyr::select(dplyr::all_of(tox_cols)) |>
+      dplyr::rename_with(~ unname(tox_label_lookup[.x]))
+
+    ## Couple data for an arbitrary set of anchors, so the index network and
+    ## the window network are built by the same code and cannot drift.
+    ##
+    ## `col_for` resolves which pollutant column an anchor should be
+    ## correlated against. The nodes are SPECIES, but a windowed index has to
+    ## be compared with that species at its own averaging window -- a 3-year
+    ## index against 5-year benzene would confound the window with the
+    ## weighting, which is the comparison the panel exists to make.
+    couple_data_for <- function(lookup, col_for = function(s, e) e){
+      specs <- names(lookup) |> purrr::keep(~ .x %in% names(df))
+      tidyr::expand_grid(spec_orig = specs, env_orig = tox_cols) |>
+        dplyr::mutate(poll_col = purrr::map2_chr(spec_orig, env_orig, col_for)) |>
+        ## Drops the 3-year NOx curve: NOx has no 3-year average for most
+        ## specimens, so the column does not exist and no correlation is
+        ## defined. Dropping the edge is honest; drawing it against 5-year
+        ## NOx would not be.
+        dplyr::filter(poll_col %in% names(df)) |>
+        dplyr::mutate(stats = purrr::map2(spec_orig, poll_col,
+                                          ~ cor_one(df[[.x]], df[[.y]]))) |>
+        tidyr::unnest(stats) |>
+        dplyr::transmute(
+          spec = factor(unname(lookup[spec_orig]),
+                        levels = unname(lookup[specs])),
+          env  = factor(unname(tox_label_lookup[env_orig]),
+                        levels = unname(tox_label_lookup[tox_cols])),
+          r, p,
+          sign = factor(ifelse(r < 0, "negative", "positive"),
+                        levels = c("positive", "negative")),
+          rd = cut(abs(r), breaks = c(-Inf, 0.2, 0.4, 0.6, Inf),
+                   labels = c("< 0.2", "0.2 - 0.4", "0.4 - 0.6", "> 0.6")),
+          pd = cut(p, breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+                   labels = c("< 0.001", "0.001 - 0.01", "0.01 - 0.05",
+                              "> 0.05")))
+    }
+
+    ## Which pollutant column a windowed PC1 anchor is compared against.
+    window_pollutant_col <- function(spec_orig, env_orig){
+      species <- env_orig |> stringr::str_remove("^exp_") |>
+        stringr::str_remove("_iqr$")
+      suffix <- switch(spec_orig,
+                       comp_pca_all_w3  = "_w3",
+                       comp_pca_all_w10 = "_w10",
+                       "_iqr")
+      paste0("exp_", species, suffix)
+    }
+
+    mix_tox_cor <- couple_data_for(mix_label_lookup)
+    win_tox_cor <- couple_data_for(window_label_lookup, window_pollutant_col)
+    idx_tox_cor <- couple_data_for(index_label_lookup)
+
+    ## The network is built from whichever composites are passed as anchors,
+    ## because it is drawn twice.
+    ##
+    ## MAIN FIGURE: PC1 at the three averaging windows. PC1 is the
+    ## manuscript's primary exposure, so the comparison a reader needs is
+    ## across ITS windows, not across index types. Three anchors keep 24
+    ## curves, which stays legible where the four-index version's 32
+    ## overlapped into an unreadable band.
+    ##
+    ## SUPPLEMENT: the four index types, for the reviewer's question about how
+    ## the cross-fitted indices relate to the individual pollutants. The
+    ## agreement AMONG index types is quantified more precisely still in
+    ## composite_composite_correlation_* and pc1_vs_crossfit_composites_*.
+    ## Curves are coloured BY ANCHOR, not by p-value.
+    ##
+    ## The p-value is gone because it was never informative here: a composite
+    ## is a linear combination of the pollutants it is correlated with, so
+    ## rho = 0 is not a hypothesis anyone holds, and every curve in the main
+    ## figure fell in the same "< 0.001" tier. Colouring by anchor puts the
+    ## channel to work instead -- it is what lets a reader follow one window's
+    ## eight curves through the bundle, which is the overlap problem the
+    ## single-colour version had.
+    ##
+    ## Curvature is assigned `by = "from"`, so each anchor's curves bow by a
+    ## different amount and the three families separate rather than tracing
+    ## the same arcs.
+    make_network <- function(couple_data, anchor_cols, legend_name) {
+      linkET::qcorrplot(linkET::correlate(tox_renamed),
+                        type = "upper", diag = FALSE) +
+        linkET::geom_square(colour = "grey85", size = 0.3) +
+        linkET::geom_couple(aes(colour = spec, size = rd, linetype = sign),
+                            data = couple_data,
+                            curvature = linkET::nice_curvature(0.16,
+                                                               by = "from"),
+                            alpha = 0.8) +
+        ## Sign has to be shown, not left to the width. Window-matching turns
+        ## the 10-year PC1's correlation with 10-year 1,3-butadiene NEGATIVE
+        ## (r = -0.25) while the 5-year pair is +0.64 -- the butadiene
+        ## surfaces at those two windows are close to uncorrelated with each
+        ## other. A width-only encoding would draw that curve identically to
+        ## a positive one of the same magnitude.
+        scale_linetype_manual(values = c(positive = "solid",
+                                         negative = "22"),
+                              name = "Sign of r") +
+        scale_fill_gradient2(low = "#436C85", mid = "white", high = "#B73F42",
+                             midpoint = 0, limits = c(-1, 1),
+                             breaks = seq(-1, 1, 0.5),
+                             name = "Pairwise r\n(toxicants)") +
+        scale_size_manual(values = c("< 0.2" = 0.4, "0.2 - 0.4" = 1.2,
+                                     "0.4 - 0.6" = 2.2, "> 0.6" = 3.5),
+                          ## drop = TRUE (the default) so each figure's
+                          ## legend lists only the tiers it actually draws.
+                          ## The window network has no |r| < 0.2 edge -- its
+                          ## weakest is 10-year lead at 0.21 -- and a legend
+                          ## key for a width that appears nowhere on the page
+                          ## is just something for a reader to hunt for. The
+                          ## index network does have them, and keeps the key.
+                          name = "|r| with pollutant\n(curve width)") +
+        scale_colour_manual(values = anchor_cols, name = legend_name,
+                            drop = FALSE) +
+        ## All four guides in one stack on the right.
+        guides(colour   = guide_legend(order = 1, ncol = 1,
+                                       override.aes = list(linewidth = 2.5)),
+               size     = guide_legend(order = 2, ncol = 1,
+                                       override.aes = list(colour = "grey35")),
+               linetype = guide_legend(order = 3, ncol = 1,
+                                       override.aes = list(colour = "grey35",
+                                                           linewidth = 1.2)),
+               fill     = guide_colorbar(order = 4,
+                                         barwidth  = unit(0.6, "cm"),
+                                         barheight = unit(3.8, "cm"),
+                                         frame.colour = "grey40",
+                                         ticks.colour = "grey40")) +
+        ## The pollutant names STAY ON THE RIGHT.
+        ##
+        ## Moving them with scale_y_discrete(position = "left") replaces the
+        ## scale linkET built, and that scale carries the REVERSED row order
+        ## the upper triangle depends on -- the tiles came back scrambled
+        ## relative to the diagonal and the curve endpoints no longer landed
+        ## on their own nodes.
+        ##
+        ## The reference figure gets left-hand names a different way: they are
+        ## not axis text at all there, they are node labels drawn along the
+        ## diagonal. That would need geom_couple to label the env side, not an
+        ## axis move. Worth doing if the placement matters, but it is a
+        ## different mechanism, not a position argument.
+        ##
+        ## There is also a reason the right edge is the natural side for an
+        ## UPPER triangle: every row ends at the right margin, so a
+        ## right-hand label sits next to its own tiles, whereas a left-hand
+        ## label for NO2 -- whose only tile is the last column -- would sit an
+        ## entire matrix away from the data it names.
+        ## Some ggplot2 versions carry linkET's raw x/y aesthetic names
+        ## through as axis titles; the axes here are pollutant names.
+        labs(x = NULL, y = NULL) +
+        theme(axis.title      = element_blank(),
+              legend.title    = element_text(face = "bold", size = 11),
+              legend.text     = element_text(size = 10),
+              legend.key.size = unit(0.55, "cm"),
+
+              ## Left margin buys room for the anchor labels, which linkET
+              ## draws outside the panel.
+              plot.margin     = margin(10, 10, 10, 62))
+    }
+
+    WINDOW_COLS <- stats::setNames(c("#DE9960", "#436C85", "#7C9A4E"),
+                                   unname(window_label_lookup))
+    INDEX_COLS  <- stats::setNames(c("#B73F42", "#436C85", "#DE9960"),
+                                   unname(index_label_lookup))
+    ## PC1 plus the three cross-fitted indices. The three keep exactly the
+    ## colours INDEX_COLS gives them, so an index is the same colour in both
+    ## supplement figures; only PC1's is new.
+    MIX_COLS    <- c(stats::setNames("#5B4B8A",
+                                     unname(mix_label_lookup[["comp_pca_all"]])),
+                     INDEX_COLS)
+
+    p_network <- make_network(win_tox_cor, WINDOW_COLS,
+                              "Averaging window\n(curve colour)")
+
+    p_network_all <- make_network(idx_tox_cor, INDEX_COLS,
+                                  "Composite index\n(curve colour)")
+
+    ## Same network with PC1 added, for the combined supplement figure. The
+    ## standalone `..._allindices_` figure stays PC1-free: there the question
+    ## is how the outcome-informed indices behave, while here PC1 is the
+    ## unsupervised reference the other three are being read against.
+    p_network_mix <- make_network(mix_tox_cor, MIX_COLS,
+                                  "Composite index\n(curve colour)")
+
+    ## --- Panel B: PC1 against each cross-fitted composite -------------------
+    ##
+    ## The scatter row is the quantitative claim the network only gestures at:
+    ## how closely each outcome-informed index, once cross-fitted, tracks the
+    ## unsupervised one. R-squared is annotated per facet because a reader
+    ## comparing panels wants the number, not an eyeballed slope.
+    cf_scatter_levels <- c("comp_wqs_cf_all", "comp_qgcomp_cf_all",
+                           "comp_qgcomp_cox_cf_all")
+
+    scatter_df <- cf_scatter_levels |>
+      purrr::keep(~ .x %in% names(df)) |>
+      purrr::map(function(cf){
+        tibble::tibble(composite = unname(mix_label_lookup[cf]),
+                       pc1 = df[["comp_pca_all"]], y = df[[cf]])
+      }) |>
+      purrr::list_rbind() |>
+      tidyr::drop_na() |>
+      dplyr::mutate(composite = factor(composite,
+                                       levels = unname(mix_label_lookup[cf_scatter_levels])))
+
+    scatter_r2 <- scatter_df |>
+      dplyr::group_by(composite) |>
+      dplyr::summarise(r = stats::cor(pc1, y), .groups = "drop") |>
+      dplyr::mutate(label = paste0("italic(r) == ", sprintf("%.2f", r)))
+
+    p_pc_scatter <- ggplot(scatter_df, aes(pc1, y)) +
+      geom_point(colour = "grey55", alpha = 0.25, size = 0.9) +
+      geom_smooth(method = "lm", formula = y ~ x, se = FALSE,
+                  colour = "#B73F42", linewidth = 0.9) +
+      geom_text(data = scatter_r2, parse = TRUE,
+                aes(x = -Inf, y = Inf, label = label),
+                hjust = -0.25, vjust = 1.5, size = 4.4, colour = "grey15") +
+      ## One facet per COLUMN: each composite is on its own scale, and
+      ## stacking them puts the three y axes one above another where a reader
+      ## compares them, rather than side by side where the x axis repeats.
+      facet_wrap(~ composite, ncol = 1, scales = "free_y") +
+      labs(x = "PC1 (unsupervised index)",
+           y = "Cross-fitted composite") +
+      theme_bw(base_size = 12) +
+      theme(strip.background = element_rect(fill = "grey92", colour = "grey60"),
+            strip.text       = element_text(face = "bold", size = 11),
+            panel.grid.minor = element_blank())
+
+    ## --- Panel B: fold-to-fold weight spread --------------------------------
+    cf_levels <- c("comp_wqs_cf_all", "comp_qgcomp_cf_all",
+                   "comp_qgcomp_cox_cf_all")
+
+    weights_5yr <- crossfit_weights |>
+      dplyr::filter(covar_set == !!covar_set, window == "w5",
+                    composite %in% cf_levels) |>
+      dplyr::mutate(composite = factor(unname(mix_label_lookup[composite]),
+                                       levels = unname(mix_label_lookup[cf_levels])),
+                    pollutant = unname(poll_label_lookup[pollutant]))
+
+    ## `flips` is the headline: TRUE when a pollutant's weight is positive in
+    ## one fold and negative in another, i.e. the composite is not identified
+    ## strongly enough to fix even the DIRECTION of that pollutant.
+    weight_spread <- weights_5yr |>
+      dplyr::group_by(composite, pollutant) |>
+      dplyr::summarise(mean_w = mean(weight), sd_w = stats::sd(weight),
+                       min_w = min(weight), max_w = max(weight),
+                       flips = length(unique(sign(weight))) > 1,
+                       .groups = "drop")
+
+    poll_order <- weight_spread |>
+      dplyr::group_by(pollutant) |>
+      dplyr::summarise(m = mean(mean_w), .groups = "drop") |>
+      dplyr::arrange(m)
+
+    weights_5yr   <- dplyr::mutate(weights_5yr,
+                                   pollutant = factor(pollutant,
+                                                      levels = poll_order$pollutant))
+    weight_spread <- dplyr::mutate(weight_spread,
+                                   pollutant = factor(pollutant,
+                                                      levels = poll_order$pollutant))
+
+    flip_cols <- c(`FALSE` = "#436C85", `TRUE` = "#B73F42")
+    flip_labs <- c("stable sign", "sign flips across folds")
+
+    p_weights <- ggplot(weight_spread, aes(pollutant, mean_w)) +
+      geom_hline(yintercept = 0, linetype = "dashed", colour = "grey45") +
+      geom_linerange(aes(ymin = mean_w - sd_w, ymax = mean_w + sd_w,
+                         colour = flips), linewidth = 0.9) +
+      geom_point(data = weights_5yr, aes(y = weight), colour = "grey35",
+                 size = 1.1, alpha = 0.75,
+                 position = position_nudge(x = 0.22)) +
+      geom_point(aes(fill = flips), shape = 21, size = 3, stroke = 0.5,
+                 colour = "black") +
+      facet_wrap(~ composite, ncol = 1, scales = "free_x") +
+      coord_flip() +
+      scale_colour_manual(values = flip_cols, labels = flip_labs, name = NULL) +
+      scale_fill_manual(values = flip_cols, labels = flip_labs, name = NULL) +
+      labs(x = NULL,
+           y = "Mixture weight (mean ± SD across folds)",
+           title = "Fold-to-fold stability of the cross-fitted mixture weights",
+           subtitle = paste0("All-toxicant groupings, ", covar_set,
+                             ". Grey points: one per cross-fitting fold.\n",
+                             "Red: the weight changes sign between folds, so ",
+                             "the composite does not fix\neven the direction ",
+                             "in which that pollutant enters it.")) +
+      theme_bw(base_size = 12) +
+      theme(plot.title       = element_text(face = "bold", size = 14),
+            plot.subtitle    = element_text(size = 11, colour = "grey25"),
+            strip.background = element_rect(fill = "grey92", colour = "grey60"),
+            strip.text       = element_text(face = "bold", size = 11),
+            legend.position  = "bottom",
+            panel.grid.minor = element_blank())
+
+    ## THE MAIN FIGURE: PCA coordinates over PC1-versus-composite scatters on
+    ## the left, the toxicant network on the right. The left column reads top
+    ## to bottom as one argument -- here is the unsupervised exposure space,
+    ## and here is how closely each cross-fitted index reproduces it -- and
+    ## the network then places both against the individual pollutants.
+    ## The left column reads as one argument about the unsupervised index:
+    ## the exposure plane, then the weight each pollutant carries in the axis
+    ## that plane is built on. Two panels, not three -- the network is the
+    ## figure's main display and takes close to two thirds of the width.
+    p_left <- (p_pca_facets /
+                 (p_pca_load + labs(title = NULL, subtitle = NULL))) +
+      patchwork::plot_layout(heights = c(1.1, 1))
+
+    p_main <- (p_left | p_network) +
+      patchwork::plot_layout(widths = c(1, 2.2)) +
+      patchwork::plot_annotation(tag_levels = "A") &
+      theme(plot.tag = element_text(face = "bold", size = 20))
+
+    ## Panel A's facet strips are species names and need markdown; declaring
+    ## that here rather than in the panel is what makes it work, since
+    ## REV_TEXT sets strip.text as plain text first and ggplot2 merges
+    ## markdown over plain text but not the reverse.
+    rev_save_plot(p_main,
+                  paste0("composite_toxicant_network_", covar_set),
+                  "composites", width = 21, height = 10.5,
+                  post = theme(
+                    strip.text = ggtext::element_markdown(face = "bold",
+                                                          size = 12)))
+
+    rev_save_plot(p_network_all,
+                  paste0("composite_toxicant_network_allindices_", covar_set),
+                  "composites", width = 13, height = 9.5)
+
+    ## The PC1-versus-composite scatters are no longer a panel of the main
+    ## figure, but they are the only place the agreement is quantified, so
+    ## they keep a figure of their own.
+    rev_save_plot(p_pc_scatter,
+                  paste0("pc1_vs_crossfit_composites_", covar_set),
+                  "composites", width = 7, height = 10,
+                  post = theme(strip.text = element_text(face = "bold",
+                                                         size = 12)))
+
+    ## The composite-composite matrix is its own figure now. It was an inset
+    ## in the corner of the network, where it was too small to read and too
+    ## easily taken for part of the network's own colour scale.
+    ## No panel title. It named the covariate set with the internal label
+    ## ("covar" / "covar_sen"), which means nothing to a reader; the caption
+    ## says which set the figure shows.
+    rev_save_plot(build_mix_bubble(df, compact = FALSE),
+                  paste0("composite_composite_correlation_", covar_set),
+                  "composites", width = 8, height = 8)
+
+    rev_save_plot(p_weights,
+                  paste0("crossfit_weight_uncertainty_", covar_set),
+                  "composites", width = 9, height = 11,
+                  post = theme(axis.text.y = ggtext::element_markdown(size = 14)))
+
+    ## The two supplement displays as ONE figure. They answer the same
+    ## question from two directions -- what the cross-fitted indices are
+    ## correlated with, and how reproducible the weights behind them are --
+    ## so a reader who has one wants the other on the same page.
+    ##
+    ## The weight panel's title and subtitle are dropped HERE ONLY. The
+    ## subtitle explains the grey points and the red markers, which a
+    ## standalone figure needs and a captioned two-panel figure does not; the
+    ## title would be the only one in a two-panel layout, and at REV_TEXT's
+    ## 18 pt it is wider than the panel and clips. The standalone version
+    ## keeps both.
+    p_supp <- (p_network_mix |
+                 (p_weights + labs(title = NULL, subtitle = NULL))) +
+      patchwork::plot_layout(widths = c(1.55, 1)) +
+      patchwork::plot_annotation(tag_levels = "A") &
+      theme(plot.tag = element_text(face = "bold", size = 20))
+
+    rev_save_plot(p_supp,
+                  paste0("crossfit_network_and_weights_", covar_set),
+                  "composites", width = 20, height = 10.5,
+                  post = theme(axis.text.y = ggtext::element_markdown(size = 14)))
+
+    ## The numbers behind the figure, so the response letter can quote them.
+    mix_mix_cor <- df |>
+      dplyr::select(dplyr::all_of(names(mix_label_lookup))) |>
+      dplyr::rename_with(~ unname(mix_label_lookup[.x])) |>
+      cor(use = "pairwise.complete.obs") |>
+      tibble::as_tibble(rownames = "composite_a") |>
+      tidyr::pivot_longer(-composite_a, names_to = "composite_b",
+                          values_to = "r") |>
+      dplyr::filter(composite_a != composite_b) |>
+      dplyr::mutate(covar_set = covar_set, r = round(r, 3), .before = 1)
+
+    list(mix_mix       = mix_mix_cor,
+         mix_tox       = mix_tox_cor |>
+           dplyr::transmute(covar_set = covar_set, composite = spec,
+                            pollutant = env, r = round(r, 3), p = signif(p, 3)),
+         weight_spread = weight_spread |>
+           dplyr::mutate(covar_set = covar_set, .before = 1) |>
+           dplyr::mutate(dplyr::across(dplyr::where(is.numeric),
+                                       ~ round(.x, 4))))
+  })
+
+composite_network_correlations <- network_cor_tables |>
+  purrr::map("mix_mix") |> purrr::list_rbind()
+composite_toxicant_correlations <- network_cor_tables |>
+  purrr::map("mix_tox") |> purrr::list_rbind()
+crossfit_weight_spread <- network_cor_tables |>
+  purrr::map("weight_spread") |> purrr::list_rbind()
+
+rev_save_table(composite_network_correlations,
+               "composite_network_correlations", "composites")
+rev_save_table(composite_toxicant_correlations,
+               "composite_toxicant_correlations", "composites")
+rev_save_table(crossfit_weight_spread, "crossfit_weight_spread", "composites")
+
+message("Pollutants whose cross-fitted weight changes sign between folds:")
+crossfit_weight_spread |>
+  dplyr::filter(covar_set == "covar", flips) |>
+  dplyr::select(composite, pollutant, mean_w, sd_w, min_w, max_w) |>
+  print(n = 20)
+
+
+# 9. Participant and specimen flow diagram (R1 comment 2) --------------------- ## FLOWSTART
+##
+## Reviewer 1 comment 2 asks for a participant and sample flow diagram, and for
+## the specimen structure behind the pooled repeated-measures MWAS to be made
+## explicit: how many specimens each participant contributed and from which
+## visit wave, and how the post-diagnosis specimens are handled.
+##
+## DESIGN. A CONSORT/STROBE participant-flow layout: one vertical spine of
+## cohort boxes, with exclusions hanging off to the right, so the reading path
+## is a single top-to-bottom line and every side box is visibly a subtraction.
+## Portrait canvas, narrow spine, restrained palette -- a neutral ground, one
+## structural blue for the cohort boxes, warm grey for exclusions, and a single
+## green accent reserved for the two analysis populations.
+##
+## This is a PARTICIPANT-INCLUSION chart, not an analysis chart: it says who
+## contributed which specimens, not how the models were fitted. Model details
+## belong in the Methods.
+##
+## The incident (Cox-eligible) cohort is deliberately absent. The Cox-weighted
+## composite is a methodological diagnostic rather than a reported analysis
+## (see the reply to comment 1), so giving it a branch here would imply a role
+## in the findings it no longer has.
+##
+## Every count is recomputed from the analysis frames rather than transcribed,
+## so the figure cannot drift away from the pipeline.
+
+load(here::here("data", "processed", "salsa_clean.RData"))
+load(rev_here("data", "processed", "combined_data_list_revision.RData"))
+
+flow_total <- combined_data_list_revision[["total"]][["all"]][["covar"]]
+flow_cox   <- combined_data_list_revision[["cox"]][["all"]][["covar"]]
+
+## post-diagnosis specimens, on the same rule R4 uses for the `all predx`
+## population: prevalent cases contribute no pre-diagnosis specimen at all,
+## incident cases contribute the draws taken after baseline + dcst years.
+flow_dx <- salsa_clean_cox |>
+  dplyr::distinct(rand_id, .keep_all = TRUE) |>
+  dplyr::select(rand_id, bl_date, dcst, demcind_incident = demcind) |>
+  dplyr::mutate(dx_date = dplyr::if_else(
+    demcind_incident == "Dementia/CIND",
+    as.Date(bl_date) + as.numeric(dcst) * 365.25, as.Date(NA)))
+
+flow_flagged <- flow_total |>
+  dplyr::left_join(dplyr::select(flow_dx, rand_id, dx_date, demcind_incident),
+                   by = "rand_id") |>
+  dplyr::mutate(
+    prevalent = is.na(demcind_incident) & demcind == "Dementia/CIND",
+    postdx    = prevalent |
+      (!is.na(dx_date) & as.Date(blood_date) > dx_date))
+
+flow_n <- list(
+  enrolled      = 1789L,
+  n_part_total  = dplyr::n_distinct(flow_total$rand_id),
+  n_spec_total  = nrow(flow_total),
+  n_part_cox    = dplyr::n_distinct(flow_cox$rand_id),
+  n_spec_cox    = nrow(flow_cox),
+  n_events      = sum(salsa_clean_cox$demcind[!duplicated(salsa_clean_cox$rand_id)] ==
+                        "Dementia/CIND"),
+  n_spec_postdx = sum(flow_flagged$postdx),
+  n_part_postdx = dplyr::n_distinct(flow_flagged$rand_id[flow_flagged$postdx]),
+  n_spec_prev   = sum(flow_flagged$prevalent),
+  n_part_prev   = dplyr::n_distinct(flow_flagged$rand_id[flow_flagged$prevalent])
+)
+flow_n$n_excluded    <- flow_n$enrolled - flow_n$n_part_total
+flow_n$n_spec_predx  <- flow_n$n_spec_total - flow_n$n_spec_postdx
+flow_n$n_part_predx  <- dplyr::n_distinct(flow_flagged$rand_id[!flow_flagged$postdx])
+flow_n$n_spec_incpdx <- flow_n$n_spec_postdx - flow_n$n_spec_prev
+flow_n$n_part_incpdx <- flow_n$n_part_postdx - flow_n$n_part_prev
+
+fmt_n <- function(x) formatC(x, format = "d", big.mark = ",")
+
+draws_per_participant <- flow_total |>
+  dplyr::count(rand_id, name = "n_draws") |>
+  dplyr::count(n_draws, name = "n_participants")
+
+spec_per_wave <- flow_total |>
+  dplyr::mutate(year = lubridate::year(blood_date)) |>
+  dplyr::group_by(wave) |>
+  dplyr::summarise(n_specimens = dplyr::n(),
+                   yr_min = min(year), yr_max = max(year), .groups = "drop")
+
+
+## ---- palette -------------------------------------------------------------
+## Neutral ground, one structural blue, warm grey for subtractions, a single
+## green reserved for the analysis populations. Four hues, no more.
+FLOW_PAL <- list(
+  cohort_fill = "#E9F0F7", cohort_line = "#40658B",
+  drop_fill   = "#F4F1ED", drop_line   = "#9C8F82",
+  note_fill   = "#F8F8F6", note_line   = "#C6C6C0",
+  main_fill   = "#DFEBE2", main_line   = "#3C6B4D",
+  ink         = "#1F2933", ink_soft    = "#4A5560",
+  rule        = "#7A8794"
+)
+
+## ---- geometry ------------------------------------------------------------
+## Spine centred at x = 34 (width 50); exclusions at x = 79 (width 36).
+SPINE_X <- 34; SPINE_W <- 50
+SIDE_X  <- 79; SIDE_W  <- 36
+
+flow_boxes <- tibble::tribble(
+  ~id,       ~x,      ~y,   ~w,      ~h, ~kind, ~tag, ~head, ~body,
+
+  "enrol",   SPINE_X, 95,   SPINE_W,  8, "cohort", NA,
+  "SALSA cohort at enrolment",
+  paste0(fmt_n(flow_n$enrolled), " participants\n",
+         "Sacramento Valley, 1998-1999"),
+
+  "excl1",   SIDE_X,  87.5, SIDE_W,   9, "drop", NA,
+  "Excluded",
+  paste0("No plasma specimen assayed\nby LC-HRMS\n",
+         fmt_n(flow_n$n_excluded), " participants"),
+
+  "metab",   SPINE_X, 79,   SPINE_W, 11, "cohort", NA,
+  "Plasma metabolomics analytic sample",
+  paste0(fmt_n(flow_n$n_part_total), " participants, ",
+         fmt_n(flow_n$n_spec_total), " specimens\n",
+         "C18-negative and HILIC-positive\nrun on every specimen"),
+
+  "struct",  SPINE_X, 57,   SPINE_W, 28, "note", NA,
+  NA, NA,
+
+  "primary", SPINE_X, 34,   SPINE_W, 11, "main", "PRIMARY",
+  "Pooled repeated-measures analysis",
+  paste0(fmt_n(flow_n$n_spec_total), " specimens, ",
+         fmt_n(flow_n$n_part_total), " participants\n",
+         "Unsupervised PC1 air-toxicant index"),
+
+  "excl2",   SIDE_X,  21,   SIDE_W,   9, "drop", NA,
+  "Excluded",
+  paste0(fmt_n(flow_n$n_spec_postdx), " post-diagnosis specimens\nfrom ",
+         fmt_n(flow_n$n_part_postdx), " participants\n(",
+         fmt_n(flow_n$n_spec_prev), " prevalent, ",
+         fmt_n(flow_n$n_spec_incpdx), " incident)"),
+
+  "sens",    SPINE_X, 9,    SPINE_W, 11, "main", "SENSITIVITY",
+  "Pre-diagnosis specimens only",
+  paste0(fmt_n(flow_n$n_spec_predx), " specimens, ",
+         fmt_n(flow_n$n_part_predx), " participants\n",
+         "Same exposure and model as the primary")
+)
+
+## ---- specimen-structure panel contents -----------------------------------
+## Two labelled blocks of right-aligned labels and bold left-aligned counts,
+## stacked rather than side by side so the spine stays narrow. This is the box
+## that has to carry the most numbers, so it gets real alignment instead of a
+## wrapped sentence.
+STRUCT_TOP <- 57 + 28 / 2           # box top edge
+SUB_X <- SPINE_X - SPINE_W / 2 + 4  # subheads, outdented
+LAB_X <- SPINE_X - SPINE_W / 2 + 8  # row labels, left aligned
+VAL_X <- SPINE_X + SPINE_W / 2 - 9  # counts, right aligned
+
+## One row per printed line, with the vertical step that precedes it, so the
+## panel is laid out by content rather than by hand-tuned coordinates.
+struct_rows <- dplyr::bind_rows(
+  tibble::tibble(kind = "title", label = "Specimen structure",
+                 value = NA, gap = 2.6),
+  tibble::tibble(kind = "subhead", label = "Draws per participant",
+                 value = NA, gap = 3.1),
+  draws_per_participant |>
+    dplyr::transmute(kind = "row",
+                     label = paste0(n_draws, dplyr::if_else(n_draws > 1,
+                                                            " draws", " draw")),
+                     value = fmt_n(n_participants), gap = 1.9),
+  tibble::tibble(kind = "subhead", label = "Specimens by visit wave",
+                 value = NA, gap = 3.1),
+  spec_per_wave |>
+    dplyr::transmute(kind = "row",
+                     label = paste0("Wave ", wave, " (", yr_min,
+                                    dplyr::if_else(yr_max > yr_min,
+                                                   paste0("-", yr_max), ""), ")"),
+                     value = fmt_n(n_specimens), gap = 1.9)
+) |>
+  dplyr::mutate(y = STRUCT_TOP - cumsum(gap))
+
+## ---- drawing -------------------------------------------------------------
+## Rounded boxes via grid, one grob per box: ggplot2 has no rounded rect and
+## sharp corners read as heavier than this palette wants.
+box_grob <- function(fill, colour) {
+  grid::roundrectGrob(
+    r  = grid::unit(2.4, "pt"),
+    gp = grid::gpar(fill = fill, col = colour, lwd = 1.1))
+}
+
+flow_box_layers <- flow_boxes |>
+  purrr::pmap(function(x, y, w, h, kind, ...) {
+    ggplot2::annotation_custom(
+      box_grob(FLOW_PAL[[paste0(kind, "_fill")]],
+               FLOW_PAL[[paste0(kind, "_line")]]),
+      xmin = x - w / 2, xmax = x + w / 2,
+      ymin = y - h / 2, ymax = y + h / 2)
+  })
+
+## Connectors: spine segments end just above the next box, side connectors run
+## from the spine out to the exclusion box.
+flow_arrows <- tibble::tribble(
+  ~x,       ~y,   ~xend,             ~yend,
+  SPINE_X,  91.0, SPINE_X,           85.0,   # enrol  -> metab
+  SPINE_X,  73.5, SPINE_X,           71.6,   # metab  -> structure
+  SPINE_X,  43.0, SPINE_X,           40.1,   # struct -> primary
+  SPINE_X,  28.5, SPINE_X,           15.1    # primary-> sensitivity
+)
+
+flow_side <- tibble::tribble(
+  ~x,      ~y,   ~xend,               ~yend,
+  SPINE_X, 87.5, SIDE_X - SIDE_W / 2, 87.5,
+  SPINE_X, 21.0, SIDE_X - SIDE_W / 2, 21.0
+)
+
+has_body <- flow_boxes |> dplyr::filter(!is.na(body))
+has_tag  <- flow_boxes |> dplyr::filter(!is.na(tag))
+
+flow_plot <- ggplot2::ggplot() +
+  flow_box_layers +
+  ggplot2::geom_segment(
+    data = flow_arrows,
+    ggplot2::aes(x = x, xend = xend, y = y, yend = yend),
+    linewidth = 0.45, colour = FLOW_PAL$rule,
+    arrow = grid::arrow(length = grid::unit(0.20, "cm"), type = "closed")) +
+  ggplot2::geom_segment(
+    data = flow_side,
+    ggplot2::aes(x = x, xend = xend, y = y, yend = yend),
+    linewidth = 0.45, colour = FLOW_PAL$rule,
+    arrow = grid::arrow(length = grid::unit(0.20, "cm"), type = "closed")) +
+  ## accent tag (PRIMARY / SENSITIVITY)
+  ggplot2::geom_text(
+    data = has_tag,
+    ggplot2::aes(x = x, y = y + h / 2 - 2.2, label = tag),
+    fontface = "bold", size = 2.75, colour = FLOW_PAL$main_line) +
+  ## box heading (the structure panel draws its own title, so it has none here)
+  ggplot2::geom_text(
+    data = dplyr::filter(flow_boxes, !is.na(head)),
+    ggplot2::aes(x = x,
+                 y = dplyr::if_else(is.na(tag), y + h / 2 - 2.3,
+                                    y + h / 2 - 5.0),
+                 label = head),
+    fontface = "bold", size = 3.5, colour = FLOW_PAL$ink) +
+  ## box body
+  ggplot2::geom_text(
+    data = has_body,
+    ggplot2::aes(x = x,
+                 y = dplyr::if_else(is.na(tag), y + h / 2 - 4.1,
+                                    y + h / 2 - 6.8),
+                 label = body),
+    vjust = 1, size = 3.0, colour = FLOW_PAL$ink_soft, lineheight = 1.25) +
+  ## specimen-structure panel: centred title, outdented subheads, then a
+  ## two-column table with the counts right aligned on a common edge
+  ggplot2::geom_text(
+    data = dplyr::filter(struct_rows, kind == "title"),
+    ggplot2::aes(x = SPINE_X, y = y, label = label),
+    fontface = "bold", size = 3.5, colour = FLOW_PAL$ink) +
+  ggplot2::geom_text(
+    data = dplyr::filter(struct_rows, kind == "subhead"),
+    ggplot2::aes(x = SUB_X, y = y, label = label),
+    hjust = 0, fontface = "bold", size = 2.95, colour = FLOW_PAL$ink) +
+  ggplot2::geom_text(
+    data = dplyr::filter(struct_rows, kind == "row"),
+    ggplot2::aes(x = LAB_X, y = y, label = label),
+    hjust = 0, size = 2.9, colour = FLOW_PAL$ink_soft) +
+  ggplot2::geom_text(
+    data = dplyr::filter(struct_rows, kind == "row"),
+    ggplot2::aes(x = VAL_X, y = y, label = value),
+    hjust = 1, fontface = "bold", size = 2.9, colour = FLOW_PAL$ink) +
+  ggplot2::coord_cartesian(xlim = c(1, 99), ylim = c(2.2, 100),
+                           expand = FALSE, clip = "off") +
+  ggplot2::theme_void() +
+  ggplot2::theme(
+    plot.margin     = ggplot2::margin(8, 8, 8, 8),
+    plot.background = ggplot2::element_rect(fill = "white", colour = NA))
+
+rev_dir("figures", "cohort")
+ggplot2::ggsave(rev_here("figures", "cohort", "participant_specimen_flow.png"),
+                flow_plot, width = 7.5, height = 9.8, dpi = 400, bg = "white")
+ggplot2::ggsave(rev_here("figures", "cohort", "participant_specimen_flow.pdf"),
+                flow_plot, width = 7.5, height = 9.8, bg = "white")
+
+## The counts behind the diagram, so the letter and the figure share a source.
+## The incident-cohort rows are kept even though the figure no longer draws
+## that arm: the response letter still reports them when answering the
+## Reviewer's questions about the Cox weight derivation.
+flow_counts_table <- tibble::tibble(
+  quantity = c("Enrolled in SALSA",
+               "Excluded: no LC-HRMS plasma specimen",
+               "Participants with metabolomics",
+               "Specimens with metabolomics",
+               "Specimens: post-diagnosis (any)",
+               "Participants contributing a post-diagnosis specimen",
+               "Specimens: post-diagnosis, prevalent case",
+               "Specimens: post-diagnosis, incident case",
+               "Specimens: pre-diagnosis population",
+               "Participants: pre-diagnosis population",
+               "Specimens: incident (Cox-eligible) cohort",
+               "Participants: incident (Cox-eligible) cohort",
+               "Incident dementia/CIND events",
+               "Rows entering the Cox weight model"),
+  n = c(flow_n$enrolled, flow_n$n_excluded, flow_n$n_part_total,
+        flow_n$n_spec_total, flow_n$n_spec_postdx, flow_n$n_part_postdx,
+        flow_n$n_spec_prev, flow_n$n_spec_incpdx, flow_n$n_spec_predx,
+        flow_n$n_part_predx, flow_n$n_spec_cox, flow_n$n_part_cox,
+        flow_n$n_events, flow_n$n_part_cox))
+
+rev_save_table(flow_counts_table, "participant_specimen_flow", "cohort")
+rev_save_table(draws_per_participant, "draws_per_participant", "cohort")
+rev_save_table(spec_per_wave, "specimens_per_wave", "cohort")
+
+message("Participant and specimen flow diagram written to ",
+        rev_here("figures", "cohort"))
+## FLOWEND
+
+
+# 10. Pre-diagnosis versus full-sample agreement (R1 comment 2) --------------- ## PREDXSTART
+##
+## Reviewer 1 comment 2 asks whether specimens drawn after a dementia/CIND
+## diagnosis were retained, and asks for them to be excluded or separately
+## evaluated. The `all predx` population is that separate evaluation, and this
+## section quantifies what it shows.
+##
+## The count of features passing FDR is NOT the statistic to compare on -- the
+## reply to comment 1 shows that a few per cent of attenuation moves the count
+## by an order of magnitude on this data set's very dense Benjamini-Hochberg
+## boundary. What is reported instead, per exposure and per platform, is the
+## correlation of the feature-level coefficients, the sign concordance among
+## the features the full sample calls significant, where those features land in
+## the pre-diagnosis FDR ranking, and the attenuation of the t statistics.
+
+predx_agreement_for <- function(results_list, platform, covar_set = "covar") {
+  full  <- results_list[["total"]][["all"]][[covar_set]]
+  predx <- results_list[["total"]][["all predx"]][[covar_set]]
+
+  intersect(names(full), names(predx)) |>
+    purrr::map(function(exp_name) {
+      a <- full[[exp_name]]
+      b <- predx[[exp_name]]
+      if (is.null(a) || is.null(b)) return(NULL)
+      a$feature <- rownames(a)
+      b$feature <- rownames(b)
+      m <- dplyr::inner_join(a, b, by = "feature",
+                             suffix = c("_all", "_pre"))
+      sig <- m |> dplyr::filter(adj.P.Val_all < 0.05)
+      has_sig <- nrow(sig) > 0
+
+      tibble::tibble(
+        platform     = platform,
+        covar_set    = covar_set,
+        exposure     = exp_name,
+        n_fdr05_all  = nrow(sig),
+        n_fdr05_pre  = sum(m$adj.P.Val_pre < 0.05, na.rm = TRUE),
+        coef_r       = round(stats::cor(m$logFC_all, m$logFC_pre), 3),
+        t_r          = round(stats::cor(m$t_all, m$t_pre), 3),
+        ## through-origin slope: the attenuation of the effect sizes
+        slope        = round(unname(stats::coef(
+                         stats::lm(logFC_pre ~ 0 + logFC_all, data = m))[1]), 3),
+        pct_same_sign = if (has_sig) round(100 * mean(
+                          sign(sig$logFC_all) == sign(sig$logFC_pre)), 1)
+                        else NA_real_,
+        n_still_fdr10 = if (has_sig) sum(sig$adj.P.Val_pre < 0.10) else NA_integer_,
+        n_still_fdr25 = if (has_sig) sum(sig$adj.P.Val_pre < 0.25) else NA_integer_,
+        median_t_ratio = if (has_sig) round(
+                           stats::median(abs(sig$t_pre)) /
+                           stats::median(abs(sig$t_all)), 3) else NA_real_
+      )
+    }) |>
+    purrr::compact() |>
+    purrr::list_rbind()
+}
+
+predx_agreement <- tidyr::expand_grid(
+    platform  = c("C18", "HILIC"),
+    covar_set = names(covar_list)
+  ) |>
+  purrr::pmap(function(platform, covar_set) {
+    L <- if (identical(platform, "C18")) mwas_results_list_c18
+         else mwas_results_list_hilic
+    predx_agreement_for(L, platform, covar_set)
+  }) |>
+  purrr::list_rbind() |>
+  dplyr::mutate(label = rev_label(exposure), .after = exposure)
+
+rev_save_table(predx_agreement, "predx_vs_all_agreement", "mwas")
+
+## ---- coefficient scatter: full sample versus pre-diagnosis -----------------
+##
+## The agreement table above is the evidence; this is the picture of it. Each
+## feature is a point: its coefficient in the full sample against its
+## coefficient in the pre-diagnosis population, with the two platforms shown
+## side by side so a reader compares them without flipping between figures.
+##
+## FORM. A coefficient-versus-coefficient scatter is the right form for
+## "do two estimates of the same quantity agree" -- the question is about the
+## joint distribution of two continuous estimates, and the reference is a line
+## rather than a level. The only reference drawn is the dashed 1:1 identity:
+## the question the figure answers is whether the two estimates agree, and a
+## fitted slope invites reading a small departure from 1 as a finding when on
+## C18 it is fitted almost entirely on null coefficients. The slope is still
+## computed and kept in predx_vs_all_agreement.xlsx for anyone who wants it.
+##
+## COLOUR. Two marks doing different jobs, not two peer categories. Features the
+## full sample calls FDR < 0.05 are the subject and take the accent; every other
+## feature is context and takes a recessive grey. The palette validator flags
+## that grey on lightness and chroma, which is correct for a categorical palette
+## and wrong for this one -- the grey is deliberately recessive. What matters is
+## separability, and the pair clears it with room (normal-vision dE 30.3, worst
+## CVD dE 27.8). The contrast warning is relieved by the printed statistics in
+## each panel and by predx_vs_all_agreement.xlsx.
+##
+## Scales are free per panel: a C18 coefficient and a HILIC coefficient are on
+## different scales, and forcing a shared axis would compress one platform into
+## the middle of the other's range for no gain -- the claim here is about the
+## slope within a panel, not about magnitudes across platforms.
+PREDX_ACCENT <- "#2F6B8F"
+PREDX_MUTED  <- "#B8BEC4"
+
+predx_scatter_for <- function(results_by_platform, covar_set = "covar",
+                              exposures = NULL, ncol = 2) {
+
+  dat <- results_by_platform |>
+    purrr::imap(function(results_list, platform) {
+      full  <- results_list[["total"]][["all"]][[covar_set]]
+      predx <- results_list[["total"]][["all predx"]][[covar_set]]
+      keep  <- intersect(names(full), names(predx))
+      if (!is.null(exposures)) keep <- intersect(keep, exposures)
+      if (length(keep) == 0) return(NULL)
+
+      keep |>
+        purrr::map(function(exp_name) {
+          a <- full[[exp_name]]; b <- predx[[exp_name]]
+          a$feature <- rownames(a); b$feature <- rownames(b)
+          dplyr::inner_join(a, b, by = "feature",
+                            suffix = c("_all", "_pre")) |>
+            dplyr::transmute(exposure = exp_name, platform = platform,
+                             feature, x = logFC_all, y = logFC_pre,
+                             sig = adj.P.Val_all < 0.05)
+        }) |>
+        purrr::list_rbind()
+    }) |>
+    purrr::compact() |>
+    purrr::list_rbind()
+
+  if (nrow(dat) == 0) return(NULL)
+
+  ## Panel order is exposure-major, platform-minor, so the two platforms of one
+  ## exposure always sit next to each other.
+  exp_levels <- if (is.null(exposures)) unique(dat$exposure) else
+    intersect(exposures, unique(dat$exposure))
+  plat_levels <- names(results_by_platform)
+
+  ## The platform is named in the strip only when both are shown; with one
+  ## platform the title already says which, and the suffix is just noise.
+  panel_name <- function(exposure, platform) {
+    lab <- unname(rev_label(as.character(exposure)))
+    if (length(plat_levels) > 1) paste0(lab, "  |  ", platform) else lab
+  }
+
+  panel_levels <- tidyr::expand_grid(
+      exposure = factor(exp_levels, levels = exp_levels),
+      platform = factor(plat_levels, levels = plat_levels)) |>
+    dplyr::mutate(panel = panel_name(exposure, platform)) |>
+    dplyr::pull(panel)
+
+  dat <- dat |>
+    dplyr::mutate(panel = factor(panel_name(exposure, platform),
+                                 levels = panel_levels))
+
+  ## per-panel statistics, printed in the panel rather than in a legend
+  stats <- dat |>
+    dplyr::group_by(panel) |>
+    dplyr::summarise(
+      r     = stats::cor(x, y),
+      n_sig = sum(sig),
+      same  = if (sum(sig) > 0) mean(sign(x[sig]) == sign(y[sig])) else NA_real_,
+      .groups = "drop") |>
+    dplyr::mutate(label = paste0(
+      "r = ", sprintf("%.3f", r),
+      dplyr::if_else(n_sig > 0,
+                     paste0("\n", n_sig, " at FDR < 0.05, ",
+                            sprintf("%.0f%%", 100 * same), " same sign"),
+                     "\nno feature at FDR < 0.05")))
+
+  ## Label anchored to the panel's own corner, with a little padding, so it
+  ## clears the point cloud in panels whose spread fills the frame.
+  lab_pos <- dat |>
+    dplyr::group_by(panel) |>
+    dplyr::summarise(x = min(x) - 0.04 * diff(range(x)),
+                     y = max(y) + 0.10 * diff(range(y)), .groups = "drop") |>
+    dplyr::left_join(dplyr::select(stats, panel, label), by = "panel")
+
+  ggplot2::ggplot(dat, ggplot2::aes(x = x, y = y)) +
+    ggplot2::geom_hline(yintercept = 0, linewidth = 0.3, colour = "grey88") +
+    ggplot2::geom_vline(xintercept = 0, linewidth = 0.3, colour = "grey88") +
+    ggplot2::geom_abline(slope = 1, intercept = 0, linetype = "22",
+                         linewidth = 0.5, colour = "grey45") +
+    ## context first, subject on top, so the accent is never buried
+    ggplot2::geom_point(data = dplyr::filter(dat, !sig),
+                        colour = PREDX_MUTED, size = 0.75, alpha = 0.45) +
+    ggplot2::geom_point(data = dplyr::filter(dat, sig),
+                        colour = PREDX_ACCENT, size = 1.5, alpha = 0.9) +
+    ggplot2::geom_text(
+      data = lab_pos,
+      ggplot2::aes(x = x, y = y, label = label),
+      inherit.aes = FALSE, hjust = 0, vjust = 1,
+      size = 3.2, lineheight = 1.2, colour = "grey25") +
+    ggplot2::facet_wrap(~ panel, scales = "free", ncol = ncol) +
+    ggplot2::labs(
+      x = "Coefficient, full sample (1,546 specimens)",
+      y = "Coefficient, pre-diagnosis only (1,408 specimens)",
+      title = paste0("Full-sample versus pre-diagnosis coefficients",
+                     if (length(results_by_platform) == 1)
+                       paste0(": ", names(results_by_platform)) else ""),
+      subtitle = paste0(
+        "Blue = FDR < 0.05 in the full sample. Dashed line is 1:1.\n",
+        "Covariate set: ", covar_set)) +
+    ggplot2::theme_bw(base_size = 12) +
+    ggplot2::theme(
+      panel.grid.minor = ggplot2::element_blank(),
+      panel.grid.major = ggplot2::element_line(linewidth = 0.25,
+                                               colour = "grey92"),
+      strip.background = ggplot2::element_rect(fill = "grey96",
+                                               colour = "grey85"),
+      strip.text       = ggplot2::element_text(face = "bold", size = 10),
+      plot.title       = ggplot2::element_text(face = "bold", size = 13),
+      plot.subtitle    = ggplot2::element_text(colour = "grey35", size = 9,
+                                               lineheight = 1.2))
+}
+
+rev_dir("figures", "mwas", "predx")
+
+predx_platforms <- list(C18   = mwas_results_list_c18,
+                        HILIC = mwas_results_list_hilic)
+
+## The primary exposure, both platforms side by side, for the letter.
+predx_scatter_for(predx_platforms, "covar",
+                  exposures = "comp_pca_all", ncol = 2) |>
+  ggplot2::ggsave(filename = rev_here("figures", "mwas", "predx",
+                                      "predx_vs_all_pc1.png"),
+                  width = 10, height = 5.6, dpi = 400, bg = "white")
+
+## The full exposure set: composites and the eight single pollutants. One
+## figure per platform -- twenty panels on a single sheet would shrink each
+## below the size at which a slope is readable.
+predx_grid_exposures <- intersect(
+  c("comp_pca_all", "comp_wqs_cf_all", single_pollutant_exposures),
+  names(mwas_results_list_hilic[["total"]][["all predx"]][["covar"]]))
+
+predx_platforms |>
+  purrr::iwalk(function(L, platform) {
+    p <- predx_scatter_for(stats::setNames(list(L), platform), "covar",
+                           exposures = predx_grid_exposures, ncol = 4)
+    if (is.null(p)) return(invisible(NULL))
+    ggplot2::ggsave(
+      rev_here("figures", "mwas", "predx",
+               paste0("predx_vs_all_grid_", tolower(platform), ".png")),
+      p, width = 12, height = 9.5, dpi = 400, bg = "white")
+  })
+
+message("Pre-diagnosis coefficient scatters written to ",
+        rev_here("figures", "mwas", "predx"))
+
+message("Pre-diagnosis versus full-sample agreement, HILIC / primary covariates:")
+predx_agreement |>
+  dplyr::filter(platform == "HILIC", covar_set == "covar") |>
+  dplyr::select(exposure, n_fdr05_all, n_fdr05_pre, coef_r, pct_same_sign,
+                n_still_fdr25, median_t_ratio) |>
+  print(n = 30)
+## PREDXEND
+
+
 message("\nVisualization completed!")
 message("Figures saved to:")
 message("  - ", rev_here("figures", "mwas"))
 message("  - ", rev_here("figures", "pathway"))
-message("  - ", rev_here("figures", "composites"), " (from R3)")
+message("  - ", rev_here("figures", "composites"),
+        " (composite scatters from R3; network + weight stability from Section 8)")
 
 #--------------------------------End of the code--------------------------------

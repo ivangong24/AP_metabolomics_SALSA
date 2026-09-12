@@ -10,9 +10,10 @@
 ##        scripts/3-clean_data.R:62 generates m = 5 imputations and keeps
 ##        `complete(1)`. That is single imputation: it ignores between-
 ##        imputation uncertainty and understates standard errors, which is
-##        exactly what the Reviewer objected to. This script runs m = 41,
-##        refits the primary MWAS in every completed dataset, and combines with
-##        Rubin's rules.
+##        exactly what the Reviewer objected to. This script refits the primary
+##        MWAS in EVERY completed dataset and combines with Rubin's rules --
+##        the defect was never the number of imputations, it was discarding
+##        four of the five that were already made.
 ##
 ## Author: Yufan Gong
 ##
@@ -28,9 +29,31 @@
 ##        two participants missing baseline age do not propagate into the
 ##        primary model.
 ##
-##        m = 41 follows the m >= 100 x FMI rule of thumb against the largest
-##        per-variable missingness in the frame (41/952 = 4.3%, physical
-##        activity), which is the value the response letter states.
+##        WHY m = 10. Two constraints, and 10 satisfies both.
+##
+##        The statistical one is the m >= 100 x FMI rule of thumb, which is
+##        stated in the fraction of missing INFORMATION, not the fraction of
+##        missing rows; the two are two orders of magnitude apart here.
+##        R20-fmi_pilot.R measures the FMI directly and finds 0.0016 for the
+##        exposure coefficient this script reports, and 0.037 for the physical
+##        activity coefficient, the most affected parameter anywhere in the
+##        model. The rule therefore asks for m >= 4 at its most conservative.
+##
+##        The second is that Reviewer 1 asked specifically for more than the
+##        five imputations the submitted pipeline generated. Five would have
+##        cleared the statistical bar; ten clears the Reviewer's as well, at a
+##        cost of a few minutes, and there is no reason to spend the exchange
+##        arguing about it.
+##
+##        The reason the FMI is so much smaller than the missingness rate is
+##        that the incomplete variables are ADJUSTMENT COVARIATES, while the
+##        exposure and the outcome are complete for every specimen. Missingness
+##        in a covariate propagates to the exposure coefficient only through the
+##        covariate's partial association with it, which is weak here.
+##
+##        The m = 41 outputs are kept under tables/imputation/m41_check/ so the
+##        response letter can state that a much larger m was run and changed
+##        nothing: m = 5, 10 and 41 agree on every FDR-significant count.
 ##
 ##        IMPUTATION IS AT THE PARTICIPANT LEVEL. The covariates are baseline
 ##        participant attributes; imputing them once per specimen would treat
@@ -56,7 +79,7 @@ source(here::here("scripts", "revision", "R1-revision_functions.R"))
 
 rev_announce("R10-imputation_revision.R")
 
-M_IMPUTATIONS <- rev_n(41, 3)
+M_IMPUTATIONS <- rev_n(10, 3)
 MAXIT         <- rev_n(50, 5)
 SEED          <- 42
 PRIMARY_EXPOSURE <- "comp_pca_all"
@@ -234,15 +257,25 @@ rubin_pool <- function(d) {
       b          = stats::var(estimate),                 # between-imputation var
       total_var  = ubar + (1 + 1 / m) * b,
       se_pooled  = sqrt(total_var),
-      ## Barnard-Rubin degrees of freedom
       lambda     = ((1 + 1 / m) * b) / total_var,
-      df_old     = ifelse(lambda > 0, (m - 1) / lambda^2, Inf),
-      df_obs     = mean(df) ,
-      df_br      = ifelse(lambda > 0,
-                          (df_old * df_obs) / (df_old + df_obs), mean(df)),
+      ## Barnard-Rubin (1999) degrees of freedom. nu_obs is the OBSERVED-data
+      ## df -- the complete-data df shrunk by the information lost to
+      ## missingness -- not the complete-data df itself. With lambda of order
+      ## 1e-4 the two agree to three decimal places here, but the response
+      ## letter now prints this formula, so the code has to be the formula.
+      nu_com    = mean(df),
+      nu_obs    = ((nu_com + 1) / (nu_com + 3)) * nu_com * (1 - lambda),
+      nu_old    = ifelse(lambda > 0, (m - 1) / lambda^2, Inf),
+      df_br     = ifelse(lambda > 0,
+                         (nu_old * nu_obs) / (nu_old + nu_obs), nu_com),
       .groups = "drop"
     ) |>
     dplyr::mutate(
+      ## r is the relative increase in variance; fmi the fraction of missing
+      ## information. lambda omits the df term and is NOT the FMI -- reporting
+      ## lambda where the m >= 100 x FMI rule expects gamma understates it.
+      r_increase = ((1 + 1 / m) * b) / ubar,
+      fmi        = (r_increase + 2 / (df_br + 3)) / (r_increase + 1),
       t_pooled = qbar / se_pooled,
       p_pooled = 2 * stats::pt(-abs(t_pooled), df = df_br)
     ) |>
@@ -262,6 +295,35 @@ system.time({
 
 mwas_pooled <- rubin_pool(per_imp)
 rev_save_table(mwas_pooled, "mwas_pooled", "imputation")
+
+## The same pooling over the FIRST FIVE of the same completed datasets, so the
+## effect of m can be read off directly. Using a nested subset rather than a
+## separate mice run is deliberate: it holds the imputations themselves fixed,
+## so any difference is attributable to m alone and not to a different draw.
+mwas_pooled_m5 <- per_imp |>
+  dplyr::filter(.data$imp <= 5) |>
+  rubin_pool()
+rev_save_table(mwas_pooled_m5, "mwas_pooled_m5", "imputation")
+
+m_concordance <- mwas_pooled |>
+  dplyr::select(met, platform, est10 = .data$qbar, se10 = .data$se_pooled,
+                fdr10 = .data$fdr_pooled) |>
+  dplyr::inner_join(
+    mwas_pooled_m5 |>
+      dplyr::select(met, platform, est5 = .data$qbar, se5 = .data$se_pooled,
+                    fdr5 = .data$fdr_pooled),
+    by = c("met", "platform"))
+
+rev_save_table(m_concordance, "m_concordance_5_vs_10", "imputation")
+
+message("\nm = 5 against m = 10, over the same imputations:")
+print(m_concordance |> dplyr::group_by(platform) |>
+        dplyr::summarise(r_estimates = round(stats::cor(est5, est10), 5),
+                         median_se_ratio = round(stats::median(se5 / se10), 5),
+                         n_fdr05_m5 = sum(fdr5 < 0.05),
+                         n_fdr05_m10 = sum(fdr10 < 0.05),
+                         n_disagree = sum((fdr5 < 0.05) != (fdr10 < 0.05)),
+                         .groups = "drop"))
 
 message("\nRubin-pooled primary MWAS, FDR < 0.05 by platform:")
 print(mwas_pooled |> dplyr::group_by(platform) |>

@@ -395,6 +395,30 @@ rev_exposure_vars_list <- list(
 ## in the multiplicity count Reviewer 1 comment 4 is about.
 STRATA_POPULATIONS <- c("all", "no demcind", "demcind")
 
+## ONE EXCEPTION, added 2026-09-09: `all predx` additionally carries the
+## FIVE-YEAR single pollutants, for the MWAS only.
+##
+## The response to Reviewer 1 comment 1 argues that benzene and 1,3-butadiene
+## are the components surviving the retention-time check, and the response to
+## comment 2 argues that post-diagnosis specimens do not drive the findings.
+## The second claim was demonstrated for the composites only, so the letter was
+## asserting for the pollutants what it had shown for the indices. All eight
+## are added rather than only the two the letter highlights: running the check
+## just where a finding is expected would be the outcome-informed selection
+## comment 1 objects to, in a smaller form.
+##
+## Deliberately NOT a widening of STRATA_POPULATIONS. That constant gates
+## `restricted_exposures`, which is the single pollutants at ALL THREE windows
+## PLUS the windowed composites, so flipping it would add 24 pollutant arms and
+## the whole window grid rather than 8 cells.
+##
+## Deliberately MWAS-only. These cells are limma-only anyway (pls_eligible()
+## discards single pollutants), and pathway_exposures_for() below keeps them
+## out of the Mummichog and Metapone grids, so the multiplicity argument above
+## still holds for the pathway results.
+PREDX_POPULATION      <- "all predx"
+PREDX_EXTRA_EXPOSURES <- single_pollutant_exposures
+
 ## Kept as an alias: R4 and R7 refer to the old name in comments and a stale
 ## reference should not be a silent NULL.
 RESTRICTED_POPULATIONS <- STRATA_POPULATIONS
@@ -427,7 +451,31 @@ exposures_for <- function(study, population, available = NULL) {
   }
   if (!is.null(available)) exps <- intersect(exps, available)
   if (!population %in% STRATA_POPULATIONS) {
-    exps <- exps[!is_restricted_exposure(exps)]
+    ## `all predx` keeps the 5-year single pollutants; every other
+    ## non-stratum population drops the restricted set entirely.
+    allowed <- if (identical(population, PREDX_POPULATION)) {
+      PREDX_EXTRA_EXPOSURES
+    } else {
+      character(0)
+    }
+    exps <- exps[!is_restricted_exposure(exps) | exps %in% allowed]
+  }
+  exps
+}
+
+## The exposure set for one pathway cell.
+##
+## Same as exposures_for() everywhere except `all predx`, where the single
+## pollutants added on 2026-09-09 are MWAS-only: eight pollutants x two
+## covariate sets x two tools would be 32 new pathway cells for a sensitivity
+## population, and the post-diagnosis question is answered by the MWAS
+## coefficient agreement rather than by a second pathway table. Nickel is the
+## specific hazard -- its HILIC hits are 69.7% void-region artifact (R13), and
+## a pre-diagnosis nickel pathway table would read as corroboration of it.
+pathway_exposures_for <- function(study, population, available = NULL) {
+  exps <- exposures_for(study, population, available = available)
+  if (identical(population, PREDX_POPULATION)) {
+    exps <- exps[!exps %in% PREDX_EXTRA_EXPOSURES]
   }
   exps
 }
@@ -588,7 +636,7 @@ rev_population_label <- function(population) {
 
 ## Markdown variant, for the figure text ggtext renders --------------------
 ##
-## The subscripts in NO2 and PM2.5 are part of the species name, not
+## The subscripts in NO2, NOx and PM2.5 are part of the species name, not
 ## decoration, and "PM2.5" written flat is wrong. Only the labels that need
 ## one differ from rev_label(); everything else passes through, so a caller
 ## can use rev_label_md() everywhere it renders markdown without special-
@@ -602,11 +650,14 @@ rev_population_label <- function(population) {
 ## them by hand is how a windowed label silently reverts to flat "PM2.5".
 rev_exposure_labels_md <- (function(){
   keep <- stringr::str_detect(names(rev_exposure_labels),
-                              "^exp_(no2|pm2\\.5)(_w[0-9]+)?_iqr$")
+                              "^exp_(no2|nox|pm2\\.5)(_w[0-9]+)?_iqr$")
   labs <- rev_exposure_labels[keep]
+  ## NOx before NO2: "^NO2" cannot match "NOx", but keeping the more specific
+  ## species first makes the intent obvious if another NO-something is added.
   stats::setNames(
     labs |>
-      stringr::str_replace("^NO2",    "NO<sub>2</sub>") |>
+      stringr::str_replace("^NOx",     "NO<sub>x</sub>") |>
+      stringr::str_replace("^NO2",     "NO<sub>2</sub>") |>
       stringr::str_replace("^PM2\\.5", "PM<sub>2.5</sub>"),
     names(labs))
 })()
@@ -888,9 +939,18 @@ rev_wrap_axis_titles <- function(p, width = 38) {
   p
 }
 
-rev_save_plot <- function(plot, name, topic, width = 10, height = 7) {
+## `post` is a theme applied AFTER REV_TEXT, for the few elements REV_TEXT
+## would otherwise overwrite. The case that needs it is ggtext: REV_TEXT sets
+## axis.text as a plain element_text, and ggplot2 refuses to merge that over
+## an element_markdown ("Only elements of the same class can be merged"), so a
+## figure wanting markdown axis labels has to re-assert them last rather than
+## first.
+rev_save_plot <- function(plot, name, topic, width = 10, height = 7,
+                          post = NULL) {
   path <- file.path(rev_dir("figures", topic), paste0(name, ".png"))
-  ggplot2::ggsave(path, plot & REV_TEXT, width = width, height = height,
+  p <- plot & REV_TEXT
+  if (!is.null(post)) p <- p & post
+  ggplot2::ggsave(path, p, width = width, height = height,
                   dpi = 300, bg = "white")
   message("  figure -> ", path)
   invisible(path)
