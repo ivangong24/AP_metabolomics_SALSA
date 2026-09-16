@@ -1043,7 +1043,11 @@ if (file.exists(pathway_long_path)) {
             axis.text.y = element_text(size = 7))
   }
 
-  tidyr::expand_grid(study = study_names,
+  ## The pathway figures are drawn for the CROSS-SECTIONAL ("total") study
+  ## only. The time-to-event composite family is withdrawn under Reviewer 1
+  ## comment 1, so a cox pathway panel would enrich an exposure the paper no
+  ## longer reports.
+  tidyr::expand_grid(study = intersect(study_names, "total"),
                      algorithm = c("mummichog", "metapone")) |>
     purrr::pwalk(function(study, algorithm){
       p <- make_pathway_bubble(pathway_long, study, algorithm)
@@ -1082,32 +1086,26 @@ if (file.exists(pathway_long_path)) {
   PATHWAY_MIN_COLS <- 1L
   PATHWAY_MAX_ROWS <- 45L
 
-  ## Columns: the three exposure windows, and within each the cognitive strata.
+  ## Columns: the cognitive strata, at the PRIMARY exposure only.
   ##
-  ## The 5-year index IS comp_pca_all -- the primary exposure -- so the middle
-  ## column is the headline result and the outer two are its shorter and longer
-  ## windows.
+  ## This used to carry the 3-, 5- and 10-year windows side by side. It no
+  ## longer does. The window comparison is a sensitivity analysis reported
+  ## under Reviewer 1 comment 13, and putting three windows in the main pathway
+  ## figure invited exactly the reading that comment 1 commits us to avoiding
+  ## -- comparing exposures by how many pathways they light up, across indices
+  ## correlated at r = 0.97. The figure shows comp_pca_all, the 5-year primary
+  ## index, and the other windows stay in the Supporting Information table.
   ##
-  ## All three windows carry all three strata (the window indices were widened
-  ## to the cognitive strata on 2026-09-02, and the rest of the exposure set
-  ## followed on 2026-09-03). `scales = "free_x"` and `space = "free_x"` are
-  ## kept so that a cell missing for any other reason collapses rather than
-  ## drawing an empty column.
+  ## `scales = "free_x"` and `space = "free_x"` are kept downstream so that a
+  ## cell missing for any other reason collapses rather than drawing an empty
+  ## column.
   PATHWAY_WINDOW_COLUMNS <- tibble::tribble(
     ~exposure,          ~window,
-    "comp_pca_all_w3",  "3-year",
-    "comp_pca_all",     "5-year",
-    "comp_pca_all_w10", "10-year")
+    "comp_pca_all",     "5-year")
 
   PATHWAY_POPULATION_LABELS <- c("all"        = "All",
                                  "no demcind" = "No dem/CIND",
                                  "demcind"    = "Dem/CIND")
-
-  ## Eight hues chosen for separation from each other AND from the diverging
-  ## fill, so the pollutant bars cannot be read as significance. Ordered so
-  ## that neighbouring pollutants never take neighbouring hues.
-  POLLUTANT_COLOURS <- c("#82B29B", "#DE476A", "#A8C3D1", "#A57E74",
-                         "#7D518A", "#E29F34", "#3F3A39", "#E9B693")
 
   PATHWAY_CATEGORY_LABELS <- c(
     "amino acid" = "Amino acid", "carbohydrate" = "Carbohydrate",
@@ -1327,7 +1325,14 @@ if (file.exists(pathway_long_path)) {
       theme(panel.grid = element_blank(),
             panel.spacing.x = unit(4, "pt"), panel.spacing.y = unit(3, "pt"),
             plot.margin = margin(2, 2, 2, 0),
-            axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+            ## With a single exposure column the tick label repeats the
+            ## caption in every facet; it earns its place only when there is
+            ## more than one column to tell apart.
+            axis.text.x = if (nrow(PATHWAY_WINDOW_COLUMNS) > 1)
+              element_text(size = 10, angle = 45, hjust = 1)
+            else element_blank(),
+            axis.ticks.x = if (nrow(PATHWAY_WINDOW_COLUMNS) > 1)
+              element_line() else element_blank(),
             axis.text.y = element_blank(), axis.ticks.y = element_blank(),
             strip.text.y = element_blank(),
             ## A one-population figure names its stratum in the file name and
@@ -1341,72 +1346,17 @@ if (file.exists(pathway_long_path)) {
             legend.title = element_text(face = "bold", size = 11),
             legend.background = element_blank(), legend.key = element_blank())
 
-    ## RIGHT: how many single pollutants reach the same pathway --------------
-    ##
-    ## One segment per pollutant that reaches p < 0.05 for that pathway in the
-    ## full cohort, so the bar length is the count and the colours say which
-    ## ones. This is the attribution question beside the mixture result, the
-    ## same role the tile half plays in the MWAS panel.
-    ##
-    ## The skeleton is completed to every pathway x pollutant with n = 0. A
-    ## pathway that no pollutant reaches would otherwise be absent from this
-    ## plot's data, and `space = "free_y"` sizes a facet from the rows its own
-    ## data has -- the three panels would stop lining up.
-    ## The 5-YEAR pollutants only. exposures_for() now returns the 3- and
-    ## 10-year ones as well (23 in total), and this half of the figure is a
-    ## count of how many pollutants reach a pathway at the primary window --
-    ## mixing three windows into one bar would count the same pollutant up to
-    ## three times, and POLLUTANT_COLOURS carries eight hues, one per species.
-    pollutants <- intersect(exposures_for("total", "all"),
-                            single_pollutant_exposures)
-
-    bar_counts <- base |>
-      dplyr::filter(population == "all", exposure %in% pollutants,
-                    p_value < 0.05) |>
-      dplyr::mutate(pathway = factor(short(pathway),
-                                     levels = levels(pd$pathway)),
-                    pollutant = rev_label_md(exposure)) |>
-      dplyr::filter(!is.na(pathway)) |>
-      dplyr::count(pathway, pollutant)
-
-    bar_dat <- tidyr::crossing(
-      row_df, pollutant = rev_label_md(pollutants)) |>
-      dplyr::left_join(bar_counts, by = c("pathway", "pollutant")) |>
-      dplyr::mutate(n = tidyr::replace_na(n, 0),
-                    pollutant = factor(pollutant,
-                                       levels = rev_label_md(pollutants)))
-
-    bar_max <- max(1, max(
-      bar_dat |> dplyr::group_by(pathway) |>
-        dplyr::summarise(t = sum(n), .groups = "drop") |> dplyr::pull(t)))
-
-    bar <- ggplot(bar_dat, aes(x = n, y = pathway, fill = pollutant)) +
-      geom_col(width = 0.72, colour = "white", linewidth = 0.2) +
-      ggh4x::facet_grid2(category ~ ., scales = "free_y", space = "free_y") +
-      scale_fill_manual(values = POLLUTANT_COLOURS, name = "Single pollutant",
-                        drop = FALSE) +
-      scale_x_continuous(breaks = scales::breaks_width(1),
-                         limits = c(0, bar_max), expand = expansion(mult = c(0, 0.04))) +
-      labs(x = "Single pollutants at p < 0.05\n(full cohort)", y = NULL) +
-      guides(fill = guide_legend(order = 3, title.position = "top",
-                                 title.hjust = 0.5, nrow = 2)) +
-      theme_bw(base_size = 12) +
-      theme(panel.grid = element_blank(),
-            panel.spacing = unit(3, "pt"),
-            plot.margin = margin(2, 2, 2, 4),
-            axis.text.y = element_blank(), axis.ticks.y = element_blank(),
-            axis.text.x = element_text(size = 10),
-            axis.title.x = element_text(face = "bold", size = 10),
-            strip.text = element_blank(), strip.background = element_blank(),
-            legend.position = "bottom",
-            legend.title = element_text(face = "bold", size = 11),
-            legend.text = ggtext::element_markdown(size = 10),
-            legend.background = element_blank(), legend.key = element_blank())
+    ## The single-pollutant count panel that used to sit here is removed.
+    ## It answered the attribution question -- which components reach the same
+    ## pathway -- with a count of nominally significant pollutants, and under
+    ## comment 1 we do not compare exposures by counts. The attribution
+    ## question is answered at the metabolite level instead, in panel C of the
+    ## MWAS figure, where each pollutant carries an effect estimate.
 
     ## The label block was taking nearly a third of the figure. It only has to
     ## fit the pathway names, so it is narrowed and the heatmap given the room.
-    layout <- lab + heat + bar +
-      patchwork::plot_layout(widths = c(1.7, 2.1, 1.7), guides = "collect") &
+    layout <- lab + heat +
+      patchwork::plot_layout(widths = c(1.7, 2.1), guides = "collect") &
       theme(legend.position = "bottom")
 
     list(plot = layout, n = dplyr::n_distinct(pd$pathway),
@@ -1441,10 +1391,12 @@ if (file.exists(pathway_long_path)) {
               if (nzchar(target$slug)) target$slug else " [all populations]",
               " - ", res$n, " pathways", capped)
 
-      ## Width scales with the number of population facets; the label and bar
-      ## panels are a fixed cost, so a one-population figure must not be as
-      ## wide as the three-population one or its squares stretch.
-      width <- 7.5 + 2.6 * length(target$pops)
+      ## Width scales with the number of population facets; the label panel is
+      ## a fixed cost, so a one-population figure must not be as wide as the
+      ## three-population one or its squares stretch. Narrower since the
+      ## single-pollutant panel was dropped and each population now
+      ## contributes one column rather than three.
+      width <- 5.0 + 1.6 * length(target$pops)
       ggsave(
         filename = file.path(rev_dir("figures", "pathway"),
                              glue::glue("pathway_heatmap_{alg}{target$slug}.png")),
@@ -3327,6 +3279,13 @@ network_cor_tables <- covar_names |>
       linkET::qcorrplot(linkET::correlate(tox_renamed),
                         type = "upper", diag = FALSE) +
         linkET::geom_square(colour = "grey85", size = 0.3) +
+        ## Print r in each cell as well as encoding it by square size and
+        ## fill. mark = "" suppresses the significance stars: with n = 1,546
+        ## every pairwise correlation is significant, so the stars would mark
+        ## nothing and only crowd the cell.
+        linkET::geom_mark(size = 2.5, colour = "grey15",
+                          digits = 2, nsmall = 2,
+                          mark = c("", "", "")) +
         linkET::geom_couple(aes(colour = spec, size = rd, linetype = sign),
                             data = couple_data,
                             curvature = linkET::nice_curvature(0.16,
@@ -3543,9 +3502,133 @@ network_cor_tables <- covar_names |>
     ## the exposure plane, then the weight each pollutant carries in the axis
     ## that plane is built on. Two panels, not three -- the network is the
     ## figure's main display and takes close to two thirds of the width.
-    p_left <- (p_pca_facets /
-                 (p_pca_load + labs(title = NULL, subtitle = NULL))) +
-      patchwork::plot_layout(heights = c(1.1, 1))
+    ## The PC1-loadings bar chart that used to sit under the exposure plane is
+    ## gone from this figure: the exposure-performance panel below plots the
+    ## same loadings against the adjusted R2 of each surface, so the bar chart
+    ## added nothing. It keeps its own standalone figure (pca_loadings.png).
+
+    ## The distribution row of panel A and panel B answer the second half of
+    ## Reviewer 1 comment 13, which
+    ## asks for the pollutant distributions and the performance of each
+    ## exposure surface. They flank the network because they describe the
+    ## same eight components the network relates to each other: what each
+    ## component looks like, and how well each is modelled.
+
+    ## Distributions: the eight components span six orders of magnitude, so every facet
+    ## takes its own axis. The panel is for the SHAPE and the relative spread
+    ## -- which is where the narrow within-Sacramento contrast shows up -- not
+    ## for comparing absolute levels between pollutants.
+    ## Butadiene is stored in ppt; displayed in ppb so the axis reads 5-7
+    ## rather than 5000-7000, and to match the unit the companion paper uses.
+    dist_rescale <- c(butadiene = 1e-3)          # ppt -> ppb
+    dist_units <- c(benzene = "ppb", butadiene = "ppb",
+                    chromium = "&mu;g/m<sup>3</sup>",
+                    nickel   = "&mu;g/m<sup>3</sup>",
+                    lead     = "&mu;g/m<sup>3</sup>",
+                    nox      = "ppb",
+                    `pm2.5`  = "&mu;g/m<sup>3</sup>", no2 = "ppb")
+    ## Name and unit together: this is now the only panel identifying each
+    ## component, so the strip has to carry both.
+    dist_labs <- stats::setNames(
+      paste0(poll_label_md, "<br>(", dist_units[names(poll_label_md)], ")"),
+      names(poll_label_md))
+
+    dist_df <- combined_data_list_revision[["total"]][["all"]][[covar_set]] |>
+      dplyr::select(dplyr::any_of(paste0("exp_", names(poll_label_md)))) |>
+      tidyr::pivot_longer(dplyr::everything(), names_to = "pollutant",
+                          values_to = "value") |>
+      dplyr::mutate(
+        pollutant = stringr::str_remove(pollutant, "^exp_"),
+        value     = value * dplyr::coalesce(unname(dist_rescale[pollutant]), 1),
+        pollutant = factor(pollutant, levels = pca_facet_order))
+
+    p_dist <- ggplot(dist_df, aes(x = value, y = "")) +
+      geom_violin(fill = "#436C85", colour = NA, alpha = 0.45, width = 0.95) +
+      geom_boxplot(width = 0.17, outlier.size = 0.25, outlier.alpha = 0.30,
+                   linewidth = 0.32, fill = "white", colour = "grey25") +
+      facet_wrap(~ pollutant, scales = "free_x", nrow = 2,
+                 labeller = ggplot2::labeller(pollutant = dist_labs)) +
+      scale_x_continuous(
+        breaks = function(r) {
+          n <- if (max(abs(r)) < 0.01) 2 else 3
+          signif(seq(r[1] + 0.18 * diff(r), r[2] - 0.18 * diff(r),
+                     length.out = n), 2)
+        },
+        labels = scales::label_number(drop0trailing = TRUE)) +
+      ## C and D are deliberately small; keep their type proportionate
+
+      ## Short enough for one line at this width. The window is per-draw and
+      ## evaluated at whichever address was current then; that detail lives in
+      ## the Methods and the figure caption rather than on the axis.
+      labs(x = "Mean of the five calendar years preceding each blood draw",
+           y = NULL) +
+      theme_bw(base_size = 11) +
+      theme(axis.text.x   = element_text(size = 7.5),
+            strip.text    = element_text(size = 8.5, lineheight = 1.05),
+            axis.title.x  = element_text(size = 12, face = "bold"),
+            panel.spacing.x = unit(0.9, "lines"),
+            axis.text.y   = element_blank(),
+            axis.ticks.y  = element_blank(),
+            panel.grid.major.y = element_blank(),
+            panel.grid.minor   = element_blank())
+
+    ## Model performance: adjusted R2 as published for these same surfaces -- Yu et al.,
+    ## Environ Res 2025 (doi:10.1016/j.envres.2025.123105), Table S3 -- against
+    ## the weight each pollutant carries in PC1. Plotting them together is the
+    ## point: the Reviewer's closing argument is that measurement error differs
+    ## across components and propagates into the index, and the two axes are
+    ## exactly those two quantities. CALINE4 NOx is a Gaussian dispersion
+    ## model, not a fitted regression, so it has no R2 and is annotated rather
+    ## than plotted.
+    lur_r2 <- tibble::tribble(
+      ~pollutant,   ~adj_r2,
+      "benzene",    0.81,
+      "butadiene",  0.62,
+      "chromium",   0.76,
+      "lead",       0.59,
+      "nickel",     0.70,
+      "no2",        0.84,
+      "pm2.5",      0.65)
+
+    r2_df <- dplyr::inner_join(pca_load_df, lur_r2, by = "pollutant")
+
+    p_r2 <- ggplot(r2_df, aes(adj_r2, PC1)) +
+      geom_point(shape = 21, size = 4, stroke = 0.5,
+                 fill = "#436C85", colour = "black") +
+      ggrepel::geom_text_repel(aes(label = label_pm), parse = TRUE,
+                               size = 4, colour = "grey20",
+                               box.padding = 0.45, min.segment.length = 0,
+                               segment.colour = "grey70", seed = 42) +
+      annotate("text", x = Inf, y = -Inf, hjust = 1.03, vjust = -0.45,
+               size = 3.6, colour = "grey45", lineheight = 1.05,
+               label = paste0("NOx (CALINE4) is a dispersion model, not a\n",
+                              "fitted surface, so it has no R\u00b2")) +
+      scale_x_continuous(limits = c(0.5, 0.95), breaks = seq(0.5, 0.9, 0.1)) +
+      expand_limits(y = 0) +
+      ## bold() has to be inside the expression: theme(face = "bold") styles a
+      ## plain string but does not reach into plotmath, so this title rendered
+      ## lighter than the y-axis title beside it.
+      labs(x = expression(bold("Adjusted"~R^2~"of the exposure surface (published)")),
+           y = "Loading on PC1") +
+      theme_bw(base_size = 11) +
+      theme(axis.title.x = element_text(size = 12, face = "bold"),
+            axis.title.y = element_text(size = 12, face = "bold"),
+            axis.text.x  = element_text(size = 9),
+            axis.text.y  = element_text(size = 9),
+            panel.grid.minor = element_blank())
+
+    ## The PC1/PC2 exposure-plane grid is no longer part of this figure -- it
+    ## restated what the network and the loading axis already show. It is still
+    ## built above and still has its own figure (pca_loadings_structure.png).
+    ##
+    ## One trap worth recording: do NOT wrap the left column in
+    ## wrap_elements(). rev_save_plot applies its themes with `&`, which does
+    ## not descend into a wrapped element, and the ggtext markdown strips
+    ## silently revert to raw "<sub>" text. Also parenthesise the composition:
+    ## `a | b + plot_layout(...)` binds the layout to b alone, because `+` has
+    ## higher precedence than `|` in R.
+    p_left <- (p_dist / p_r2) +
+      patchwork::plot_layout(heights = c(1, 1))
 
     p_main <- (p_left | p_network) +
       patchwork::plot_layout(widths = c(1, 2.2)) +
