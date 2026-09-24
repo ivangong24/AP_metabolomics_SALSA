@@ -72,6 +72,19 @@
 ##        from the pollutant surfaces, not from the covariates, so it is
 ##        identical across the 41 completed datasets.
 ##
+##        EXPOSURE WINDOWS (Reviewer 1 comment 13). The exposure is read from
+##        the environment variable R10_EXPOSURE (default comp_pca_all, the
+##        primary analysis). Setting it to comp_pca_all_w3 or comp_pca_all_w10
+##        refits the same Rubin-pooled MWAS for the 3- and 10-year indices, so
+##        the window comparison in the letter is pooled-vs-pooled:
+##          R10_EXPOSURE=comp_pca_all_w3  Rscript scripts/revision/R10-imputation_revision.R
+##          R10_EXPOSURE=comp_pca_all_w10 Rscript scripts/revision/R10-imputation_revision.R
+##        Window runs write mwas_pooled_<window>.xlsx and
+##        pooled_vs_single_<window>.xlsx only; the m = 5 check, complete-case
+##        analysis and .RData are produced by the primary run alone. The
+##        window index enters the imputation model in place of comp_pca_all,
+##        so each run imputes with the exposure it analyses.
+##
 ## ---------------------------
 
 source(here::here("scripts", "1-functions.R"))
@@ -82,7 +95,12 @@ rev_announce("R10-imputation_revision.R")
 M_IMPUTATIONS <- rev_n(10, 3)
 MAXIT         <- rev_n(50, 5)
 SEED          <- 42
-PRIMARY_EXPOSURE <- "comp_pca_all"
+PRIMARY_EXPOSURE <- Sys.getenv("R10_EXPOSURE", "comp_pca_all")
+IS_PRIMARY       <- PRIMARY_EXPOSURE == "comp_pca_all"
+OUT_SUFFIX       <- if (IS_PRIMARY) "" else
+  paste0("_", sub("^comp_pca_all_", "", PRIMARY_EXPOSURE))
+message("Exposure: ", PRIMARY_EXPOSURE,
+        if (IS_PRIMARY) " (primary)" else " (window sensitivity)")
 
 lc <- function(d) dplyr::rename_all(d, stringr::str_to_lower)
 
@@ -155,7 +173,7 @@ missingness <- impute_frame |>
 message("\nPre-imputation missingness among the ", nrow(impute_frame),
         " participants:")
 print(missingness |> dplyr::filter(n_missing > 0))
-rev_save_table(missingness, "missingness_summary", "imputation")
+if (IS_PRIMARY) rev_save_table(missingness, "missingness_summary", "imputation")
 
 
 # 2. Multiple imputation ------------------------------------------------------
@@ -170,7 +188,7 @@ mice_input <- impute_frame |>
 mids <- mice::mice(mice_input, m = M_IMPUTATIONS, maxit = MAXIT,
                    method = "pmm", seed = SEED, printFlag = FALSE)
 
-rev_save_table(
+if (IS_PRIMARY) rev_save_table(
   tibble::tibble(variable = names(mice_input),
                  method = as.character(mids$method),
                  in_primary_model = names(mice_input) %in%
@@ -294,8 +312,17 @@ system.time({
 })
 
 mwas_pooled <- rubin_pool(per_imp)
-rev_save_table(mwas_pooled, "mwas_pooled", "imputation")
+rev_save_table(mwas_pooled, paste0("mwas_pooled", OUT_SUFFIX), "imputation")
+save_pooled_annotated(mwas_pooled, paste0("mwas_pooled", OUT_SUFFIX))
 
+message("\nRubin-pooled MWAS (", PRIMARY_EXPOSURE, "), FDR < 0.05 by platform:")
+print(mwas_pooled |> dplyr::group_by(platform) |>
+        dplyr::summarise(n_features = dplyr::n(),
+                         n_fdr05 = sum(fdr_pooled < 0.05),
+                         n_fdr10 = sum(fdr_pooled < 0.10),
+                         .groups = "drop"))
+
+if (IS_PRIMARY) {
 ## The same pooling over the FIRST FIVE of the same completed datasets, so the
 ## effect of m can be read off directly. Using a nested subset rather than a
 ## separate mice run is deliberate: it holds the imputations themselves fixed,
@@ -304,6 +331,7 @@ mwas_pooled_m5 <- per_imp |>
   dplyr::filter(.data$imp <= 5) |>
   rubin_pool()
 rev_save_table(mwas_pooled_m5, "mwas_pooled_m5", "imputation")
+save_pooled_annotated(mwas_pooled_m5, "mwas_pooled_m5")
 
 m_concordance <- mwas_pooled |>
   dplyr::select(met, platform, est10 = .data$qbar, se10 = .data$se_pooled,
@@ -324,13 +352,7 @@ print(m_concordance |> dplyr::group_by(platform) |>
                          n_fdr05_m10 = sum(fdr10 < 0.05),
                          n_disagree = sum((fdr5 < 0.05) != (fdr10 < 0.05)),
                          .groups = "drop"))
-
-message("\nRubin-pooled primary MWAS, FDR < 0.05 by platform:")
-print(mwas_pooled |> dplyr::group_by(platform) |>
-        dplyr::summarise(n_features = dplyr::n(),
-                         n_fdr05 = sum(fdr_pooled < 0.05),
-                         n_fdr10 = sum(fdr_pooled < 0.10),
-                         .groups = "drop"))
+}
 
 
 # 6. Agreement with the single-imputation result ------------------------------
@@ -368,8 +390,16 @@ agreement <- pooled_vs_single |>
 
 message("\nPooled versus single imputation:")
 print(agreement)
-rev_save_table(pooled_vs_single, "pooled_vs_single", "imputation")
-rev_save_table(agreement, "pooled_vs_single_agreement", "imputation")
+rev_save_table(pooled_vs_single, paste0("pooled_vs_single", OUT_SUFFIX),
+               "imputation")
+rev_save_table(agreement, paste0("pooled_vs_single_agreement", OUT_SUFFIX),
+               "imputation")
+
+if (!IS_PRIMARY) {
+  message("\nWindow run complete; m = 5 check, complete-case analysis and ",
+          ".RData are produced by the primary run only.")
+  quit(save = "no", status = 0)
+}
 
 
 # 7. Complete-case sensitivity analysis ---------------------------------------

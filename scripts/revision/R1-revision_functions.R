@@ -876,6 +876,108 @@ REV_TEXT <- theme(
   plot.tag      = element_text(face = "bold", size = 26)
 )
 
+## Coefficient-agreement scatter, shared SI style ------------------------------
+##
+## The SI carries four figures that all make the same claim -- the primary
+## coefficients against those from some alternative fit -- and they had grown
+## four different looks. This is the one in R7's subgroup/covariate-set panel
+## (si_scatters_*), lifted into a function so the others can match it.
+##
+## `dat` needs five columns: x, y, class (a factor whose last level is "NS"),
+## column_type ("C18/neg-" / "HILIC/pos+") and panel (the facet).
+##
+## Colours are the project palette: red for features significant on both
+## sides, orange and blue for one side only, grey for neither.
+SI_SCATTER_COLS <- c("#B73F42", "#DE9960", "#436C85")
+
+si_agreement_scatter <- function(dat, xlab, ylab, title, subtitle = NULL,
+                                 legend_name = "Significance",
+                                 shape_name = "Column",
+                                 add_identity = TRUE,
+                                 show_shape_legend = TRUE,
+                                 corner_labels = NULL) {
+  stopifnot(all(c("x", "y", "class", "column_type", "panel") %in% names(dat)))
+  lev <- setdiff(levels(dat$class), "NS")
+  cols <- stats::setNames(SI_SCATTER_COLS[seq_along(lev)], lev)
+
+  p <- ggplot2::ggplot(dat, ggplot2::aes(x = .data$x, y = .data$y)) +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dotted", colour = "grey60") +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dotted", colour = "grey60")
+
+  ## The 1:1 line is the reference the claim is actually about; the fitted
+  ## line answers a different question (is the relationship linear) and both
+  ## are wanted, so they are drawn in different weights.
+  if (add_identity) {
+    p <- p + ggplot2::geom_abline(slope = 1, intercept = 0, linetype = "22",
+                                  linewidth = 0.5, colour = "grey45")
+  }
+
+  p +
+    ggplot2::geom_point(
+      data = ~ dplyr::filter(.x, .data$class == "NS"),
+      ggplot2::aes(shape = .data$column_type),
+      colour = "grey70", alpha = 0.5, size = 1.5) +
+    ggplot2::geom_point(
+      data = ~ dplyr::filter(.x, .data$class != "NS"),
+      ggplot2::aes(colour = .data$class, shape = .data$column_type),
+      alpha = 0.7, size = 2) +
+    ggplot2::geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
+                         colour = "black", linewidth = 0.8, alpha = 0.2) +
+    ggplot2::scale_colour_manual(values = cols, name = legend_name,
+                                 drop = FALSE) +
+    ## The shape guide earns its place only when a facet mixes platforms. In
+    ## the figures faceted BY platform it restates the strip above the panel.
+    ggplot2::scale_shape_manual(
+      values = c("C18/neg-" = 16, "HILIC/pos+" = 17), name = shape_name,
+      guide = if (show_shape_legend) "legend" else "none") +
+    ggpubr::stat_cor(method = "pearson", label.x.npc = "left",
+                     label.y.npc = "top", size = 5.5, fontface = "italic") +
+    ## Per-facet notes go in the opposite corner from stat_cor. A caption
+    ## carrying one line per facet makes the reader match text to panel by
+    ## counting; in the corner of its own panel there is nothing to match.
+    ## `corner_labels` needs a `panel` column and a `label` column.
+    (if (!is.null(corner_labels))
+      ggplot2::geom_text(
+        data = corner_labels,
+        ggplot2::aes(x = Inf, y = -Inf, label = .data$label),
+        hjust = 1.04, vjust = -0.35, size = 4, lineheight = 1.15,
+        colour = "grey25", inherit.aes = FALSE)
+     else NULL) +
+    ggplot2::facet_wrap(~ panel, scales = "free") +
+    ggplot2::labs(title = title, subtitle = subtitle, x = xlab, y = ylab) +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      plot.title    = ggplot2::element_text(face = "bold", size = 16,
+                                            hjust = 0.5),
+      plot.subtitle = ggplot2::element_text(size = 12, colour = "grey30",
+                                            hjust = 0.5, lineheight = 1.2),
+      axis.title    = ggplot2::element_text(face = "bold", size = 14),
+      axis.text     = ggplot2::element_text(size = 13),
+      strip.text    = ggplot2::element_text(face = "bold", size = 14),
+      ## Boxed legend, matching the submitted figures and the subgroup /
+      ## covariate-set scatter this style comes from.
+      legend.position   = "bottom",
+      legend.box        = "horizontal",
+      legend.background = ggplot2::element_rect(colour = "grey80",
+                                                fill = "white",
+                                                linewidth = 0.5),
+      legend.margin     = ggplot2::margin(4, 6, 4, 6),
+      legend.title      = ggplot2::element_text(face = "bold", size = 13),
+      legend.text       = ggplot2::element_text(size = 12))
+}
+
+## Build the four-level class column two comparisons share: significant on
+## both sides, on one side only, or on neither.
+si_scatter_class <- function(p_x, p_y, label_x, label_y, alpha = 0.05,
+                             both_label = "Both P < 0.05") {
+  factor(dplyr::case_when(
+    p_x < alpha & p_y < alpha ~ both_label,
+    p_x < alpha               ~ label_x,
+    p_y < alpha               ~ label_y,
+    TRUE                      ~ "NS"),
+    levels = c(both_label, label_x, label_y, "NS"))
+}
+
 ## Percent difference, for Reviewer 1 minor comment 6 -------------------------
 ##
 ## "consider reporting percent differences, which would also permit direct
@@ -902,6 +1004,59 @@ add_percent_difference <- function(df, conf = 0.95) {
       pct_diff_hi = (2^(.data$logFC + z * se) - 1) * 100
     ) |>
     dplyr::relocate(pct_diff, pct_diff_lo, pct_diff_hi, .after = "logFC")
+}
+
+## Annotation for the Rubin-pooled MWAS tables (R10, R19). The annotation does
+## not depend on the exposure or the imputation, so it is taken from the
+## annotated full results R5 already built (total/all/covar/comp_pca_all), one
+## row per feature, rather than re-joined from the xMSannotator output. The
+## percent difference uses the pooled SE and the Barnard-Rubin df, matching
+## Table 2, not the normal approximation add_percent_difference() uses for the
+## single-fit tables. Written as <name>_annotated.xlsx beside the unannotated
+## table, which R18/R21/R22/R25 read and which is left unchanged.
+ANNOT_COLS <- c("compound", "n_candidates", "confidence_level", "chemical_id",
+                "multiple_match", "reference", "confidence", "adduct",
+                "delta_ppm", "formula", "isotope_group", "plausible_esi",
+                "ms2_evidence")
+
+pooled_annotation_lookup <- local({
+  cache <- NULL
+  function() {
+    if (is.null(cache)) {
+      env <- new.env()
+      load(rev_here("data", "metabolomics", "results",
+                    "mwas_annotation_revision.RData"), envir = env)
+      cache <<- list(
+        c18   = env$mwas_full_annotated_list_c18,
+        hilic = env$mwas_full_annotated_list_hilic
+      ) |>
+        purrr::map(~ .x[["total"]][["all"]][["covar"]][["comp_pca_all"]] |>
+                     dplyr::select(met, dplyr::all_of(ANNOT_COLS))) |>
+        purrr::list_rbind(names_to = "platform")
+    }
+    cache
+  }
+})
+
+annotate_pooled_table <- function(pooled, conf = 0.95) {
+  pooled |>
+    dplyr::mutate(
+      mz = as.numeric(stringr::str_split_i(.data$met, "_", 3)),
+      rt = as.numeric(stringr::str_split_i(.data$met, "_", 4)),
+      tcrit       = stats::qt(1 - (1 - conf) / 2, df = .data$df_br),
+      pct_diff    = (2^.data$qbar - 1) * 100,
+      pct_diff_lo = (2^(.data$qbar - .data$tcrit * .data$se_pooled) - 1) * 100,
+      pct_diff_hi = (2^(.data$qbar + .data$tcrit * .data$se_pooled) - 1) * 100,
+      .after = "met"
+    ) |>
+    dplyr::select(-"tcrit") |>
+    dplyr::left_join(pooled_annotation_lookup(), by = c("platform", "met")) |>
+    dplyr::arrange(.data$platform, .data$p_pooled)
+}
+
+save_pooled_annotated <- function(pooled, name) {
+  rev_save_table(annotate_pooled_table(pooled), paste0(name, "_annotated"),
+                 "imputation")
 }
 
 ## The combined panels are 30 inches wide, so they carry larger tick numbers

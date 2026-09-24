@@ -923,9 +923,16 @@ inflammation_metabolism <- c("Arachidonic", "Leukotriene", "Prostaglandin",
                              "linoleic", "Linoleate", "Eicosanoid")
 
 vitamin_cofactor_metabolism <- c("Vitamin", "Biopterin", "Lipoate",
-                                 "Porphyrin", "Catabolism", "Purine",
+                                 "Porphyrin", "Catabolism",
                                  "Caffeine", "Folate", "Riboflavin",
                                  "Thiamine", "Biotin", "Pantothenate")
+
+## Purine and pyrimidine metabolism are nucleotide metabolism. Purine used to
+## sit under vitamin/cofactor, presumably because its degradation products run
+## through the same cofactor chemistry, and pyrimidine matched nothing at all
+## and fell through to "other" -- so the two halves of one class were drawn in
+## two different blocks.
+nucleotide_metabolism <- c("Purine", "Pyrimidine", "Nucleotide")
 
 signaling_metabolism <- c("Dynorphin", "Dopamine", "Serotonin",
                           "Catecholamine", "Neurotransmitter")
@@ -943,6 +950,7 @@ pathway_category_colours <- c(
   "energy"           = "#C44E52",
   "inflammation"     = "#8172B3",
   "vitamin/cofactor" = "#937860",
+  "nucleotide"       = "#64B5CD",
   "signaling"        = "#DA8BC3",
   "secondary"        = "#8C8C8C",
   "xenobiotic"       = "#CCB974",
@@ -961,6 +969,8 @@ categorize_pathway <- function(pathway_name) {
                                    ignore_case = TRUE)) ~ "energy",
     str_detect(pathway_name, regex(str_c(inflammation_metabolism, collapse = "|"),
                                    ignore_case = TRUE)) ~ "inflammation",
+    str_detect(pathway_name, regex(str_c(nucleotide_metabolism, collapse = "|"),
+                                   ignore_case = TRUE)) ~ "nucleotide",
     str_detect(pathway_name, regex(str_c(vitamin_cofactor_metabolism, collapse = "|"),
                                    ignore_case = TRUE)) ~ "vitamin/cofactor",
     str_detect(pathway_name, regex(str_c(signaling_metabolism, collapse = "|"),
@@ -1086,6 +1096,14 @@ if (file.exists(pathway_long_path)) {
   PATHWAY_MIN_COLS <- 1L
   PATHWAY_MAX_ROWS <- 45L
 
+  ## The same rule the mummichog call applies (min_hits = 3 in
+  ## R6-pathway_revision.R): a pathway needs at least three matched
+  ## significant metabolites to be reported. Mummichog enforces it internally,
+  ## so for its figures this is a no-op; metapone does not, and without it a
+  ## single-metabolite pathway can carry the strongest enrichment factor in
+  ## the figure. Applying it to both is what makes the two comparable.
+  PATHWAY_MIN_HITS <- 3
+
   ## Columns: the cognitive strata, at the PRIMARY exposure only.
   ##
   ## This used to carry the 3-, 5- and 10-year windows side by side. It no
@@ -1103,6 +1121,38 @@ if (file.exists(pathway_long_path)) {
     ~exposure,          ~window,
     "comp_pca_all",     "5-year")
 
+  ## The three averaging windows, for the window-comparison figure only. The
+  ## caution above still applies -- these indices correlate at r = 0.97, so
+  ## the figure is a stability check, not three findings -- and the caption
+  ## has to say so.
+  PATHWAY_WINDOW_COLUMNS_3 <- tibble::tribble(
+    ~exposure,             ~window,
+    "comp_pca_all_w3",     "3-year",
+    "comp_pca_all",        "5-year",
+    "comp_pca_all_w10",    "10-year")
+
+  ## Eight pollutants, so a fixed qualitative palette. Subscripts are drawn
+  ## with ggtext in the legend, which is why the labels carry markup.
+  PATHWAY_POLLUTANT_COLOURS <- c(
+    "Benzene"       = "#55A868",
+    "1,3-Butadiene" = "#C44E52",
+    "Chromium"      = "#9DBBCB",
+    "Lead"          = "#8C5A2B",
+    "NO<sub>2</sub>"  = "#8172B3",
+    "Nickel"        = "#DFA53A",
+    "PM<sub>2.5</sub>" = "#3B3B3B",
+    "NO<sub>x</sub>"  = "#DE9960")
+
+  PATHWAY_POLLUTANT_LABELS <- c(
+    "exp_benzene_iqr"   = "Benzene",
+    "exp_butadiene_iqr" = "1,3-Butadiene",
+    "exp_chromium_iqr"  = "Chromium",
+    "exp_lead_iqr"      = "Lead",
+    "exp_no2_iqr"       = "NO<sub>2</sub>",
+    "exp_nickel_iqr"    = "Nickel",
+    "exp_pm2.5_iqr"     = "PM<sub>2.5</sub>",
+    "exp_nox_iqr"       = "NO<sub>x</sub>")
+
   PATHWAY_POPULATION_LABELS <- c("all"        = "All",
                                  "no demcind" = "No dem/CIND",
                                  "demcind"    = "Dem/CIND")
@@ -1110,7 +1160,8 @@ if (file.exists(pathway_long_path)) {
   PATHWAY_CATEGORY_LABELS <- c(
     "amino acid" = "Amino acid", "carbohydrate" = "Carbohydrate",
     "lipid" = "Lipid", "energy" = "Energy", "inflammation" = "Inflammation",
-    "vitamin/cofactor" = "Vitamin/cofactor", "signaling" = "Signalling",
+    "vitamin/cofactor" = "Vitamin/cofactor", "nucleotide" = "Nucleotide",
+    "signaling" = "Signalling",
     "secondary" = "Secondary", "xenobiotic" = "Xenobiotic", "other" = "Other")
 
   ## Class blocks are drawn from the SAME three colours the significance scale
@@ -1148,12 +1199,42 @@ if (file.exists(pathway_long_path)) {
   create_pathway_heatmap <- function(data, algorithm_name,
                                      populations = names(PATHWAY_POPULATION_LABELS),
                                      min_cols = PATHWAY_MIN_COLS,
-                                     max_rows = PATHWAY_MAX_ROWS) {
+                                     max_rows = PATHWAY_MAX_ROWS,
+                                     window_cols = PATHWAY_WINDOW_COLUMNS,
+                                     single_pollutant_panel = FALSE,
+                                     ref_window = NULL,
+                                     pathway_whitelist = NULL,
+                                     min_hits = PATHWAY_MIN_HITS) {
 
     base <- data |>
       dplyr::filter(algorithm == algorithm_name, study == "total",
                     covar_set == "covar",
                     !is.na(p_value), is.finite(p_plot), p_plot > 0)
+
+    ## Optionally restrict to a common library. Metapone tests 372 pathways
+    ## against mummichog's 94, and most of the extra ones are KEGG disease and
+    ## signalling entries -- glucagon signalling, amoebiasis, central carbon
+    ## metabolism in cancer -- which have no counterpart in the other tool and
+    ## land in "Other". Matching on the normalised name is how the two
+    ## libraries are compared, since metapone lower-cases its pathway names.
+    if (!is.na(min_hits) && "n_sig" %in% names(base)) {
+      dropped <- dplyr::n_distinct(base$pathway)
+      base <- dplyr::filter(base, !is.na(.data$n_sig), .data$n_sig >= min_hits)
+      dropped <- dropped - dplyr::n_distinct(base$pathway)
+      if (dropped > 0)
+        message("    min_hits = ", min_hits, ": dropped ", dropped,
+                " pathway(s) with fewer matched metabolites")
+    }
+
+    if (!is.null(pathway_whitelist)) {
+      norm_name <- function(x) tolower(trimws(gsub("\\s+", " ", x)))
+      before <- dplyr::n_distinct(base$pathway)
+      base <- dplyr::filter(base,
+                            norm_name(.data$pathway) %in%
+                              norm_name(pathway_whitelist))
+      message("    library restriction: ", dplyr::n_distinct(base$pathway),
+              " of ", before, " pathways retained")
+    }
     if (nrow(base) == 0) return(NULL)
 
     ## Middle panel: the three windows compared WITHIN each population.
@@ -1161,29 +1242,40 @@ if (file.exists(pathway_long_path)) {
     ## reader compares 3-, 5- and 10-year side by side in one stratum rather
     ## than comparing strata within one window.
     heat_src <- base |>
-      dplyr::filter(exposure %in% PATHWAY_WINDOW_COLUMNS$exposure,
+      dplyr::filter(exposure %in% window_cols$exposure,
                     population %in% populations) |>
       add_enrichment() |>
-      dplyr::left_join(PATHWAY_WINDOW_COLUMNS, by = "exposure") |>
+      dplyr::left_join(window_cols, by = "exposure") |>
       dplyr::mutate(
         neglogp = -log10(p_plot),
         stars = dplyr::case_when(!is.na(p_fdr) & p_fdr < 0.05 ~ "***",
                                  !is.na(p_fdr) & p_fdr < 0.10 ~ "**",
                                  p_value < 0.05               ~ "*",
                                  TRUE                         ~ ""),
-        window = factor(window, levels = PATHWAY_WINDOW_COLUMNS$window),
+        window = factor(window, levels = window_cols$window),
         pop = factor(unname(PATHWAY_POPULATION_LABELS[population]),
                      levels = unname(PATHWAY_POPULATION_LABELS[populations])),
         category = unname(PATHWAY_CATEGORY_LABELS[categorize_pathway(pathway)]))
     if (nrow(heat_src) == 0) return(NULL)
 
-    ## Rows: significant in at least min_cols of those columns, then the
-    ## strongest max_rows by minimum p. Display limits only; the full table is
-    ## pathway_results_long.xlsx.
+    ## Rows: either significant in a NAMED reference column, or significant
+    ## in at least min_cols of them.
+    ##
+    ## The reference rule is what the window figures want. A pathway earns its
+    ## row by the primary analysis, and the other windows are then shown for
+    ## it whether or not they reach p < 0.05 -- which is the point, since a
+    ## window that misses is as informative as one that hits. Selecting on
+    ## "significant somewhere" instead would let a pathway in on the strength
+    ## of a sensitivity window alone.
+    ##
+    ## Either way max_rows caps the figure height. Display limits only; the
+    ## full table is pathway_results_long.xlsx.
     keep <- heat_src |>
-      dplyr::filter(p_value < 0.05) |>
+      dplyr::filter(p_value < 0.05,
+                    if (is.null(ref_window)) TRUE
+                    else as.character(window) == ref_window) |>
       dplyr::count(pathway, name = "n_cols") |>
-      dplyr::filter(n_cols >= min_cols) |>
+      dplyr::filter(n_cols >= if (is.null(ref_window)) min_cols else 1L) |>
       dplyr::left_join(
         heat_src |>
           dplyr::group_by(pathway) |>
@@ -1199,19 +1291,40 @@ if (file.exists(pathway_long_path)) {
 
     ## Classes ordered by their best result, "Other" always last; pathways
     ## ordered within class so the strongest sits at the top of its block.
-    cat_ord <- pd |>
+    cat_ord <- (if (is.null(ref_window)) pd else
+                  dplyr::filter(pd, as.character(window) == ref_window)) |>
       dplyr::group_by(category) |>
       dplyr::summarise(m = min(p_value, na.rm = TRUE), .groups = "drop") |>
       dplyr::mutate(other = category == "Other") |>
       dplyr::arrange(other, m) |>
       dplyr::pull(category)
 
-    path_ord <- pd |>
+    ## Rank by the REFERENCE window when there is one, not by the best p
+    ## across the windows shown. With three windows the cross-window minimum
+    ## reorders the rows against the primary analysis the text reports --
+    ## glutathione metabolism, whose strongest result is at ten years, jumped
+    ## above glutamate metabolism, which is stronger at five. The figure has
+    ## to agree with the analysis it is a figure of.
+    rank_src <- if (is.null(ref_window)) pd else
+      dplyr::filter(pd, as.character(window) == ref_window)
+    if (nrow(rank_src) == 0) rank_src <- pd
+
+    ## Ties need a real tiebreaker. When ranking is on one window, `s` is that
+    ## window's own -log10 p and carries no information beyond `m`, so two
+    ## pathways with the same p fell back to whatever order the table happened
+    ## to hold them in. Metapone makes this common rather than rare: its
+    ## permutation p-values are granular at 1/1000, so arginine and proline
+    ## and alanine and aspartate metabolism both read p = 0.001 and their
+    ## order was arbitrary. The enrichment factor breaks the tie on the
+    ## quantity the squares are already sized by, largest nearest the top.
+    path_ord <- rank_src |>
       dplyr::group_by(category, pathway) |>
       dplyr::summarise(m = min(p_value, na.rm = TRUE),
-                       s = sum(neglogp, na.rm = TRUE), .groups = "drop") |>
-      dplyr::mutate(category = factor(category, levels = cat_ord)) |>
-      dplyr::arrange(category, dplyr::desc(m), s) |>
+                       s = sum(neglogp, na.rm = TRUE),
+                       e = max(ef, na.rm = TRUE), .groups = "drop") |>
+      dplyr::mutate(category = factor(category, levels = cat_ord),
+                    e = dplyr::if_else(is.finite(.data$e), .data$e, 0)) |>
+      dplyr::arrange(category, dplyr::desc(m), s, e) |>
       dplyr::pull(pathway)
 
     ## Truncate from the CENTRE, not the end. These are systematic names whose
@@ -1265,11 +1378,11 @@ if (file.exists(pathway_long_path)) {
     lab <- ggplot(row_df, aes(x = 1, y = pathway)) +
       geom_rect(data = block_df, inherit.aes = FALSE, aes(fill = category),
                 xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf) +
-      geom_text(aes(label = pathway), x = 0.985, hjust = 1, size = 2.85,
+      geom_text(aes(label = pathway), x = 0.985, hjust = 1, size = 3.3,
                 colour = "grey15") +
       geom_text(data = catlab,
                 aes(y = ymid, label = category, colour = category),
-                x = 0.02, hjust = 0, fontface = "bold", size = 2.9) +
+                x = 0.02, hjust = 0, fontface = "bold", size = 3.4) +
       ggh4x::facet_grid2(category ~ ., scales = "free_y", space = "free_y") +
       scale_fill_manual(values = cat_fill, guide = "none") +
       scale_colour_manual(values = cat_text, guide = "none") +
@@ -1294,7 +1407,41 @@ if (file.exists(pathway_long_path)) {
     mid <- -log10(0.05)
     fill_stops <- sort(unique(c(min(rng[1], mid - 1e-6), mid, rng[2])))
 
+    ## Light grey banding behind alternate rows, as in the submitted pathway
+    ## figure. With a dozen rows and up to three columns the eye loses the row
+    ## on the way across, and a band is cheaper than gridlines, which would
+    ## compete with the squares.
+    ##
+    ## Drawn as one tile per CELL, not as a rect spanning the panel. A rect
+    ## needs numeric ymin/ymax, which switches the y scale to continuous, and
+    ## that breaks `space = "free"`: every facet then gets the height of the
+    ## whole row set and the rows stop lining up with the label block.
+    ##
+    ## EVERY row is in the layer, banded ones opaque and the rest transparent.
+    ## Passing only the banded rows looks right in a single panel and is wrong
+    ## in a facetted one: with free scales the panel's positions come from the
+    ## levels each layer actually carries, so four banded rows out of eight
+    ## were re-indexed onto positions one to four and the band collapsed into
+    ## a block at the bottom of the facet.
+    ## Parity runs down the figure AS DRAWN, not along the factor. Categories
+    ## stack top to bottom, but within a facet a discrete axis puts level one
+    ## at the BOTTOM, so numbering the levels in order alternates correctly
+    ## inside a block and can collide across one: a class with an odd row
+    ## count leaves its last band touching the first band of the class below,
+    ## which is what put the lipid and energy blocks against each other.
+    ## Ordering by category and then by DESCENDING level walks the rows in the
+    ## order a reader sees them, so no two adjacent rows share a band.
+    stripe <- pd |>
+      dplyr::distinct(pathway, category) |>
+      dplyr::arrange(category, dplyr::desc(pathway)) |>
+      dplyr::mutate(band = dplyr::row_number() %% 2 == 0) |>
+      tidyr::expand_grid(dplyr::distinct(pd, window, pop))
+
     heat <- ggplot(pd, aes(x = window, y = pathway)) +
+      geom_tile(data = stripe, inherit.aes = FALSE,
+                aes(x = window, y = pathway),
+                width = 1, height = 1,
+                fill = ifelse(stripe$band, "grey95", NA)) +
       geom_point(aes(size = ef, fill = neglogp), shape = 22,
                  colour = "grey75", stroke = 0.25) +
       geom_text(aes(label = stars), size = 3.2, vjust = 0.78,
@@ -1327,11 +1474,13 @@ if (file.exists(pathway_long_path)) {
             plot.margin = margin(2, 2, 2, 0),
             ## With a single exposure column the tick label repeats the
             ## caption in every facet; it earns its place only when there is
-            ## more than one column to tell apart.
-            axis.text.x = if (nrow(PATHWAY_WINDOW_COLUMNS) > 1)
-              element_text(size = 10, angle = 45, hjust = 1)
+            ## more than one column to tell apart. Horizontal: the columns are
+            ## short labels and there is room, so the 45-degree tilt bought
+            ## nothing but a harder read.
+            axis.text.x = if (nrow(window_cols) > 1)
+              element_text(size = 11)
             else element_blank(),
-            axis.ticks.x = if (nrow(PATHWAY_WINDOW_COLUMNS) > 1)
+            axis.ticks.x = if (nrow(window_cols) > 1)
               element_line() else element_blank(),
             axis.text.y = element_blank(), axis.ticks.y = element_blank(),
             strip.text.y = element_blank(),
@@ -1346,21 +1495,90 @@ if (file.exists(pathway_long_path)) {
             legend.title = element_text(face = "bold", size = 11),
             legend.background = element_blank(), legend.key = element_blank())
 
-    ## The single-pollutant count panel that used to sit here is removed.
-    ## It answered the attribution question -- which components reach the same
-    ## pathway -- with a count of nominally significant pollutants, and under
-    ## comment 1 we do not compare exposures by counts. The attribution
-    ## question is answered at the metabolite level instead, in panel C of the
-    ## MWAS figure, where each pollutant carries an effect estimate.
+    ## RIGHT (optional): which single pollutants reach the same pathway.
+    ##
+    ## One stacked bar per pathway, one segment per pollutant at p < 0.05 in
+    ## the full cohort. This is an attribution aid, not a ranking: the bar
+    ## counts nominally significant pollutants and nothing more, and comment 1
+    ## commits us to not comparing exposures by counts. The caption has to say
+    ## so, and the composite columns to its left carry the actual result.
+    sp <- NULL
+    if (single_pollutant_panel) {
+      sp_src <- base |>
+        dplyr::filter(population == "all",
+                      exposure %in% names(PATHWAY_POLLUTANT_LABELS),
+                      p_value < 0.05, pathway %in% keep) |>
+        dplyr::mutate(
+          pollutant = factor(unname(PATHWAY_POLLUTANT_LABELS[exposure]),
+                             levels = names(PATHWAY_POLLUTANT_COLOURS)),
+          category = unname(PATHWAY_CATEGORY_LABELS[categorize_pathway(pathway)]))
+
+      ## Every retained pathway needs a row even when no pollutant reaches it,
+      ## or facet_grid2 drops it and the three panels stop lining up.
+      sp_rows <- pd |> dplyr::distinct(pathway, category)
+      sp_dat <- sp_src |>
+        dplyr::mutate(category = factor(category, levels = cat_ord),
+                      pathway = factor(short(pathway),
+                                       levels = unname(path_lab))) |>
+        dplyr::count(pathway, category, pollutant, name = "n")
+
+      ## A zero-height bar for every pollutant, so that a pollutant reaching
+      ## none of these pathways still gets a key. drop = FALSE alone keeps the
+      ## level but leaves its swatch empty, because the glyph is drawn from
+      ## the layer's data and there is none.
+      sp_keys <- tidyr::expand_grid(
+        pollutant = factor(names(PATHWAY_POLLUTANT_COLOURS),
+                           levels = names(PATHWAY_POLLUTANT_COLOURS)),
+        sp_rows |> dplyr::slice(1)) |>
+        dplyr::mutate(n = 0)
+
+      sp <- ggplot(sp_rows, aes(y = pathway)) +
+        geom_blank() +
+        geom_col(data = sp_keys, aes(x = n, fill = pollutant), width = 0.7) +
+        geom_col(data = sp_dat, aes(x = n, fill = pollutant),
+                 width = 0.7, colour = "white", linewidth = 0.2) +
+        ggh4x::facet_grid2(category ~ ., scales = "free_y", space = "free_y") +
+        scale_fill_manual(values = PATHWAY_POLLUTANT_COLOURS,
+                          name = "Single pollutant", drop = FALSE) +
+        scale_x_continuous(expand = expansion(mult = c(0, 0.04)),
+                           breaks = scales::breaks_width(1)) +
+        guides(fill = guide_legend(order = 3, title.position = "top",
+                                   title.hjust = 0.5, nrow = 2,
+                                   byrow = TRUE)) +
+        ## As the axis title, not a caption: patchwork collects the legends
+        ## into a strip under the whole figure, and a caption sits below that,
+        ## a long way from the panel it names.
+        labs(x = "Single pollutants at p < 0.05\n(full cohort)", y = NULL) +
+        theme_bw(base_size = 12) +
+        theme(panel.grid = element_blank(),
+              plot.margin = margin(2, 2, 2, 2),
+              axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+              axis.text.x = element_text(size = 10),
+              axis.title.x = element_text(face = "bold", size = 10,
+                                          lineheight = 1.1),
+              strip.text.y = element_blank(), strip.background.y = element_blank(),
+              legend.position = "bottom",
+              legend.title = element_text(face = "bold", size = 11),
+              legend.text = ggtext::element_markdown(size = 10),
+              legend.background = element_blank(), legend.key = element_blank())
+    }
 
     ## The label block was taking nearly a third of the figure. It only has to
     ## fit the pathway names, so it is narrowed and the heatmap given the room.
-    layout <- lab + heat +
-      patchwork::plot_layout(widths = c(1.7, 2.1), guides = "collect") &
-      theme(legend.position = "bottom")
+    ## The label block carries a class name on the left and a pathway name on
+    ## the right of the same strip, so it needs width for both: at the larger
+    ## type "Vitamin/cofactor" ran into "Vitamin B1 (thiamin) metabolism".
+    layout <- if (is.null(sp)) {
+      lab + heat +
+        patchwork::plot_layout(widths = c(2.05, 2.1), guides = "collect")
+    } else {
+      lab + heat + sp +
+        patchwork::plot_layout(widths = c(2.05, 2.1, 1.2), guides = "collect")
+    }
+    layout <- layout & theme(legend.position = "bottom")
 
     list(plot = layout, n = dplyr::n_distinct(pd$pathway),
-         n_available = available)
+         n_available = available, has_sp = !is.null(sp))
   }
 
   ## One figure over all three populations, plus one per population on the
@@ -1378,8 +1596,35 @@ if (file.exists(pathway_long_path)) {
   tidyr::expand_grid(alg = c("mummichog", "metapone"),
                      target = pathway_heatmap_targets) |>
     purrr::pwalk(function(alg, target){
-      res <- create_pathway_heatmap(pathway_long, alg,
-                                    populations = target$pops)
+      ## The single-pollutant bars go on the full-cohort figure only. In the
+      ## stratum figures they would be the same eight full-cohort bars beside
+      ## a different stratum's heatmap, which invites reading them as that
+      ## stratum's result.
+      ## The full-cohort figure carries the three averaging windows and the
+      ## single-pollutant bars; the rows are the pathways the 5-year primary
+      ## analysis calls significant, so the other two windows are read as a
+      ## stability check on that result rather than as results of their own.
+      ## The stratum figures keep the single 5-year column: their question is
+      ## the stratum, and three windows per stratum is a different figure.
+      ## The single-pollutant bars are built (single_pollutant_panel) but not
+      ## used: a count of nominally significant pollutants per pathway is not
+      ## interpretable as attribution, and comment 1 commits us to not
+      ## comparing exposures by counts. Kept behind the flag rather than
+      ## deleted, since the panel itself took some getting right.
+      ## Metapone is restricted to the pathways mummichog also tests, so the
+      ## two figures compare like with like. Without it the metapone figure is
+      ## dominated by library entries the primary analysis never saw.
+      full_cohort <- identical(target$pops, "all")
+      wl <- if (alg == "metapone")
+        unique(pathway_long$pathway[pathway_long$algorithm == "mummichog"])
+        else NULL
+      res <- create_pathway_heatmap(
+        pathway_long, alg, populations = target$pops,
+        single_pollutant_panel = FALSE,
+        pathway_whitelist = wl,
+        window_cols = if (full_cohort) PATHWAY_WINDOW_COLUMNS_3
+                      else PATHWAY_WINDOW_COLUMNS,
+        ref_window  = if (full_cohort) "5-year" else NULL)
       if (is.null(res)) {
         message("No pathway rows for the ", alg, " heatmap",
                 if (nzchar(target$slug)) paste0(" (", target$slug, ")") else "")
@@ -1396,13 +1641,46 @@ if (file.exists(pathway_long_path)) {
       ## three-population one or its squares stretch. Narrower since the
       ## single-pollutant panel was dropped and each population now
       ## contributes one column rather than three.
-      width <- 5.0 + 1.6 * length(target$pops)
+      width <- 6.0 + 1.6 * length(target$pops) +
+        if (isTRUE(res$has_sp)) 2.4 else 0
       ggsave(
         filename = file.path(rev_dir("figures", "pathway"),
                              glue::glue("pathway_heatmap_{alg}{target$slug}.png")),
         plot = res$plot, width = width, height = 0.30 * res$n + 3.2,
         dpi = 300, bg = "white", limitsize = FALSE)
     })
+
+  ## Window-comparison figure: the full cohort only, the three averaging
+  ## windows side by side, rows restricted to pathways reaching p < 0.05 under
+  ## at least one of them. No single-pollutant panel -- the eight pollutants
+  ## are a separate question from the stability of the composite, and carrying
+  ## them here was what made the earlier version of this figure read as a
+  ## league table of exposures.
+  ## min_cols = every window, not just one. A row here is a pathway that
+  ## clears p < 0.05 under the 3-, 5- AND 10-year index, which is the point of
+  ## the figure: what survives the choice of averaging window rather than what
+  ## any one window happens to return.
+  purrr::walk(c("mummichog", "metapone"), function(alg){
+    res <- create_pathway_heatmap(pathway_long, alg, populations = "all",
+                                  window_cols = PATHWAY_WINDOW_COLUMNS_3,
+                                  min_cols = nrow(PATHWAY_WINDOW_COLUMNS_3))
+    if (is.null(res)) {
+      message("No pathway rows for the ", alg, " window heatmap")
+      return(invisible(NULL))
+    }
+    message("Pathway window heatmap: ", alg, " - ", res$n, " pathways",
+            if (res$n < res$n_available)
+              glue::glue(" (capped from {res$n_available})") else "")
+    ggsave(
+      filename = file.path(rev_dir("figures", "pathway"),
+                           glue::glue("pathway_heatmap_{alg}_windows.png")),
+      ## Requiring every window leaves few rows, so the figure is narrowed
+      ## and its rows given more height: at the wider size the squares were
+      ## lost in white space.
+      plot = res$plot, width = if (res$n <= 6) 6.4 else 8.2,
+      height = (if (res$n <= 6) 0.55 else 0.30) * res$n + 3.0,
+      dpi = 300, bg = "white", limitsize = FALSE)
+  })
 
 } else {
   message("Pathway summary not found at ", pathway_long_path,
@@ -2571,7 +2849,7 @@ build_panel_parts <- function(exposure_name, population, covar_set, study) {
       mwas_results_list_c18[[study]], mwas_results_list_hilic[[study]],
       covar_set = covar_set, exposure_name = exposure_name
     ) +
-      labs(title = NULL) + guides(shape = "none") + panel_legend_theme
+      labs(title = NULL) + panel_legend_theme
   }
 
   ## Panel C is the primary-versus-sensitivity covariate contrast, within the
@@ -2585,12 +2863,23 @@ build_panel_parts <- function(exposure_name, population, covar_set, study) {
       population = population, cov1 = "covar", cov2 = "covar_sen",
       exposure_name = exposure_name
     ) +
-      labs(title = NULL) + guides(shape = "none") + panel_legend_theme
+      labs(title = NULL) +
+      ## The Column key is carried by the subgroup panel above. Both panels
+      ## draw the same two shapes, and patchwork collects the guides into one
+      ## row, so a second identical key here only makes that row too wide for
+      ## the figure -- which is what clipped both ends of it.
+      guides(shape = "none") + panel_legend_theme
   }
 
   purrr::compact(list(p2, p3)) |>
     purrr::map(rev_wrap_axis_titles) |>
-    purrr::map(~ .x + REV_TEXT + REV_TEXT_PANEL)
+    purrr::map(~ .x + REV_TEXT + REV_TEXT_PANEL +
+                 ## REV_TEXT sets legend text at 13/14, which is right for a
+                 ## single key and too wide for three collected into one row
+                 ## under the figure: the last one lost its final label off
+                 ## the right edge. Applied after REV_TEXT so it wins.
+                 theme(legend.title = element_text(face = "bold", size = 11),
+                       legend.text  = element_text(size = 10)))
 }
 
 ## Annotation is applied once, to the finished layout. Tagging a patchwork and
@@ -3275,7 +3564,13 @@ network_cor_tables <- covar_names |>
     ## Curvature is assigned `by = "from"`, so each anchor's curves bow by a
     ## different amount and the three families separate rather than tracing
     ## the same arcs.
-    make_network <- function(couple_data, anchor_cols, legend_name) {
+    ## mark_size is the r printed in each cell, label_size the anchor node
+    ## labels ("3-year", "PC1", ...). Both default to what the two supplement
+    ## networks use; the main-text figure passes larger values, since it is
+    ## printed at 21 inches wide and its type was reading small against the
+    ## rest of the figure.
+    make_network <- function(couple_data, anchor_cols, legend_name,
+                             mark_size = 2.5, label_size = 3.88) {
       linkET::qcorrplot(linkET::correlate(tox_renamed),
                         type = "upper", diag = FALSE) +
         linkET::geom_square(colour = "grey85", size = 0.3) +
@@ -3283,11 +3578,12 @@ network_cor_tables <- covar_names |>
         ## fill. mark = "" suppresses the significance stars: with n = 1,546
         ## every pairwise correlation is significant, so the stars would mark
         ## nothing and only crowd the cell.
-        linkET::geom_mark(size = 2.5, colour = "grey15",
+        linkET::geom_mark(size = mark_size, colour = "grey15",
                           digits = 2, nsmall = 2,
                           mark = c("", "", "")) +
         linkET::geom_couple(aes(colour = spec, size = rd, linetype = sign),
                             data = couple_data,
+                            label.size = label_size,
                             curvature = linkET::nice_curvature(0.16,
                                                                by = "from"),
                             alpha = 0.8) +
@@ -3373,7 +3669,8 @@ network_cor_tables <- covar_names |>
                      INDEX_COLS)
 
     p_network <- make_network(win_tox_cor, WINDOW_COLS,
-                              "Averaging window\n(curve colour)")
+                              "Averaging window\n(curve colour)",
+                              mark_size = 3.6, label_size = 5.2)
 
     p_network_all <- make_network(idx_tox_cor, INDEX_COLS,
                                   "Composite index\n(curve colour)")
@@ -3596,11 +3893,11 @@ network_cor_tables <- covar_names |>
       geom_point(shape = 21, size = 4, stroke = 0.5,
                  fill = "#436C85", colour = "black") +
       ggrepel::geom_text_repel(aes(label = label_pm), parse = TRUE,
-                               size = 4, colour = "grey20",
+                               size = 5.4, colour = "grey20",
                                box.padding = 0.45, min.segment.length = 0,
                                segment.colour = "grey70", seed = 42) +
       annotate("text", x = Inf, y = -Inf, hjust = 1.03, vjust = -0.45,
-               size = 3.6, colour = "grey45", lineheight = 1.05,
+               size = 4.8, colour = "grey45", lineheight = 1.05,
                label = paste0("NOx (CALINE4) is a dispersion model, not a\n",
                               "fitted surface, so it has no R\u00b2")) +
       scale_x_continuous(limits = c(0.5, 0.95), breaks = seq(0.5, 0.9, 0.1)) +
@@ -3627,24 +3924,69 @@ network_cor_tables <- covar_names |>
     ## silently revert to raw "<sub>" text. Also parenthesise the composition:
     ## `a | b + plot_layout(...)` binds the layout to b alone, because `+` has
     ## higher precedence than `|` in R.
-    p_left <- (p_dist / p_r2) +
-      patchwork::plot_layout(heights = c(1, 1))
+    ## TYPE SIZES ARE SET PER PANEL HERE, NOT GLOBALLY.
+    ##
+    ## rev_save_plot applies REV_TEXT (and any `post`) with `&`, which reaches
+    ## every panel equally, and this figure needs them to differ: panels A and
+    ## B were reading small at 21 inches, while panel C's pollutant names and
+    ## its four-part legend are already at the right size and grow into the
+    ## curves if enlarged. So each panel carries REV_TEXT plus its own sizes,
+    ## and the composition adds only the tag, which nothing else sets.
+    ##
+    ## Panel A's facet strips are species names and need markdown. Adding
+    ## element_markdown AFTER REV_TEXT is what makes it work: REV_TEXT sets
+    ## strip.text as plain text and ggplot2 merges markdown over plain text
+    ## but not the reverse.
+    ## Panel A's type is bounded by its column width, not by taste: at the
+    ## old 1 : 2.2 split its eight facets were about 1.6 inches apiece, where
+    ## 18 pt tick labels run together, a 16 pt strip clips "1,3-Butadiene",
+    ## and an 18 pt axis title is wider than the column and loses its first
+    ## word off the left edge. The left column is therefore widened below,
+    ## which panel C can afford — its curves sit in a lot of white space.
+    pA <- p_dist + REV_TEXT +
+      theme(## 14, not 15: panel B's larger y-axis numbers and title widen its
+            ## label gutter, and patchwork aligns the two panels in this
+            ## column, so panel A's facets lost the width that let a 15 pt
+            ## strip hold "1,3-Butadiene" without clipping.
+            strip.text      = ggtext::element_markdown(face = "bold",
+                                                       size = 14),
+            axis.text.x     = element_text(size = 15),
+            ## Same size as panel B's axis titles, set just below.
+            axis.title.x    = element_text(size = 18, face = "bold"),
+            panel.spacing.x = unit(1.1, "lines"),
+            ## The axis title is nearly as wide as the column; a little left
+            ## margin keeps it off the edge of the page.
+            plot.margin     = margin(5, 5, 5, 14))
 
-    p_main <- (p_left | p_network) +
-      patchwork::plot_layout(widths = c(1, 2.2)) +
+    ## The .x / .y elements have to be named individually. p_r2 sets
+    ## axis.text.x, axis.text.y, axis.title.x and axis.title.y explicitly, and
+    ## a specific element beats a generic `axis.text` / `axis.title` added
+    ## afterwards -- setting the generic ones here left the panel at its
+    ## original 9 pt numbers and 12 pt titles.
+    pB <- p_r2 + REV_TEXT +
+      theme(axis.text.x  = element_text(size = 16),
+            axis.text.y  = element_text(size = 16),
+            axis.title.x = element_text(size = 18, face = "bold"),
+            axis.title.y = element_text(size = 18, face = "bold"))
+
+    ## Panel C keeps REV_TEXT's axis.text (the pollutant names) and its
+    ## legend sizes unchanged; only the in-cell r values and the node labels
+    ## grew, and those are geom sizes set on make_network above.
+    pC <- p_network + REV_TEXT
+
+    p_left <- (pA / pB) + patchwork::plot_layout(heights = c(1, 1))
+
+    p_main <- (p_left | pC) +
+      patchwork::plot_layout(widths = c(1.4, 2.2)) +
       patchwork::plot_annotation(tag_levels = "A") &
-      theme(plot.tag = element_text(face = "bold", size = 20))
+      theme(plot.tag = element_text(face = "bold", size = 32))
 
-    ## Panel A's facet strips are species names and need markdown; declaring
-    ## that here rather than in the panel is what makes it work, since
-    ## REV_TEXT sets strip.text as plain text first and ggplot2 merges
-    ## markdown over plain text but not the reverse.
-    rev_save_plot(p_main,
-                  paste0("composite_toxicant_network_", covar_set),
-                  "composites", width = 21, height = 10.5,
-                  post = theme(
-                    strip.text = ggtext::element_markdown(face = "bold",
-                                                          size = 12)))
+    network_png <- file.path(rev_dir("figures", "composites"),
+                             paste0("composite_toxicant_network_",
+                                    covar_set, ".png"))
+    ggplot2::ggsave(network_png, p_main, width = 21, height = 10.5,
+                    dpi = 300, bg = "white")
+    message("  figure -> ", network_png)
 
     rev_save_plot(p_network_all,
                   paste0("composite_toxicant_network_allindices_", covar_set),
@@ -3806,6 +4148,18 @@ flow_n$n_part_predx  <- dplyr::n_distinct(flow_flagged$rand_id[!flow_flagged$pos
 flow_n$n_spec_incpdx <- flow_n$n_spec_postdx - flow_n$n_spec_prev
 flow_n$n_part_incpdx <- flow_n$n_part_postdx - flow_n$n_part_prev
 
+## Cognitive status of the 952 analytic participants, for the flow figure:
+## prevalent cases (dementia/CIND at the baseline visit), incident cases
+## (diagnosed during follow-up) and those intact throughout. The three sum to
+## the analytic sample, which is what reconciles Table 1's n = 141 with the
+## 908-participant incident cohort (Reviewer 1 comment 3).
+flow_n$n_part_prevalent <- flow_n$n_part_prev
+flow_n$n_part_incident  <- flow_n$n_events
+flow_n$n_part_intact    <- flow_n$n_part_total - flow_n$n_part_prevalent -
+  flow_n$n_part_incident
+stopifnot(flow_n$n_part_prevalent + flow_n$n_part_incident +
+            flow_n$n_part_intact == flow_n$n_part_total)
+
 fmt_n <- function(x) formatC(x, format = "d", big.mark = ",")
 
 draws_per_participant <- flow_total |>
@@ -3844,16 +4198,19 @@ flow_boxes <- tibble::tribble(
   paste0(fmt_n(flow_n$enrolled), " participants\n",
          "Sacramento Valley, 1998-1999"),
 
-  "excl1",   SIDE_X,  87.5, SIDE_W,   9, "drop", NA,
+  "excl1",   SIDE_X,  90.0, SIDE_W,   9, "drop", NA,
   "Excluded",
   paste0("No plasma specimen assayed\nby LC-HRMS\n",
          fmt_n(flow_n$n_excluded), " participants"),
 
-  "metab",   SPINE_X, 79,   SPINE_W, 11, "cohort", NA,
+  "metab",   SPINE_X, 80.5, SPINE_W, 12.6, "cohort", NA,
   "Plasma metabolomics analytic sample",
-  paste0(fmt_n(flow_n$n_part_total), " participants, ",
-         fmt_n(flow_n$n_spec_total), " specimens\n",
-         "C18-negative and HILIC-positive\nrun on every specimen"),
+  paste0(fmt_n(flow_n$n_spec_total), " specimens from ",
+         fmt_n(flow_n$n_part_total), " participants\n(dementia/CIND: ",
+         fmt_n(flow_n$n_part_prevalent), " prevalent at baseline, ",
+         fmt_n(flow_n$n_part_incident), " incident in follow-up;\n",
+         fmt_n(flow_n$n_part_intact), " cognitively intact throughout)\n",
+         "C18-negative and HILIC-positive run on every specimen"),
 
   "struct",  SPINE_X, 57,   SPINE_W, 28, "note", NA,
   NA, NA,
@@ -3887,12 +4244,14 @@ STRUCT_TOP <- 57 + 28 / 2           # box top edge
 SUB_X <- SPINE_X - SPINE_W / 2 + 4  # subheads, outdented
 LAB_X <- SPINE_X - SPINE_W / 2 + 8  # row labels, left aligned
 VAL_X <- SPINE_X + SPINE_W / 2 - 9  # counts, right aligned
+STRUCT_TITLE_Y <- STRUCT_TOP - 2.6
 
 ## One row per printed line, with the vertical step that precedes it, so the
-## panel is laid out by content rather than by hand-tuned coordinates.
+## panel is laid out by content rather than by hand-tuned coordinates. The
+## wave subhead says the waves overlap in calendar time, because the timeline
+## figure counts the same specimens by year of draw and the two groupings
+## therefore do not match row for row.
 struct_rows <- dplyr::bind_rows(
-  tibble::tibble(kind = "title", label = "Specimen structure",
-                 value = NA, gap = 2.6),
   tibble::tibble(kind = "subhead", label = "Draws per participant",
                  value = NA, gap = 3.1),
   draws_per_participant |>
@@ -3900,7 +4259,8 @@ struct_rows <- dplyr::bind_rows(
                      label = paste0(n_draws, dplyr::if_else(n_draws > 1,
                                                             " draws", " draw")),
                      value = fmt_n(n_participants), gap = 1.9),
-  tibble::tibble(kind = "subhead", label = "Specimens by visit wave",
+  tibble::tibble(kind = "subhead",
+                 label = "Specimens by visit wave (waves overlap in time)",
                  value = NA, gap = 3.1),
   spec_per_wave |>
     dplyr::transmute(kind = "row",
@@ -3909,7 +4269,8 @@ struct_rows <- dplyr::bind_rows(
                                                    paste0("-", yr_max), ""), ")"),
                      value = fmt_n(n_specimens), gap = 1.9)
 ) |>
-  dplyr::mutate(y = STRUCT_TOP - cumsum(gap))
+  dplyr::mutate(y = (STRUCT_TITLE_Y - 1.2) - cumsum(.data$gap),
+                lab_x = LAB_X, val_x = VAL_X, sub_x = SUB_X)
 
 ## ---- drawing -------------------------------------------------------------
 ## Rounded boxes via grid, one grob per box: ggplot2 has no rounded rect and
@@ -3933,15 +4294,15 @@ flow_box_layers <- flow_boxes |>
 ## from the spine out to the exclusion box.
 flow_arrows <- tibble::tribble(
   ~x,       ~y,   ~xend,             ~yend,
-  SPINE_X,  91.0, SPINE_X,           85.0,   # enrol  -> metab
-  SPINE_X,  73.5, SPINE_X,           71.6,   # metab  -> structure
+  SPINE_X,  91.0, SPINE_X,           86.9,   # enrol  -> metab
+  SPINE_X,  74.1, SPINE_X,           71.6,   # metab  -> structure
   SPINE_X,  43.0, SPINE_X,           40.1,   # struct -> primary
   SPINE_X,  28.5, SPINE_X,           15.1    # primary-> sensitivity
 )
 
 flow_side <- tibble::tribble(
   ~x,      ~y,   ~xend,               ~yend,
-  SPINE_X, 87.5, SIDE_X - SIDE_W / 2, 87.5,
+  SPINE_X, 90.0, SIDE_X - SIDE_W / 2, 90.0,
   SPINE_X, 21.0, SIDE_X - SIDE_W / 2, 21.0
 )
 
@@ -3983,21 +4344,20 @@ flow_plot <- ggplot2::ggplot() +
     vjust = 1, size = 3.0, colour = FLOW_PAL$ink_soft, lineheight = 1.25) +
   ## specimen-structure panel: centred title, outdented subheads, then a
   ## two-column table with the counts right aligned on a common edge
-  ggplot2::geom_text(
-    data = dplyr::filter(struct_rows, kind == "title"),
-    ggplot2::aes(x = SPINE_X, y = y, label = label),
-    fontface = "bold", size = 3.5, colour = FLOW_PAL$ink) +
+  ggplot2::annotate("text", x = SPINE_X, y = STRUCT_TITLE_Y,
+                    label = "Specimen structure", fontface = "bold",
+                    size = 3.5, colour = FLOW_PAL$ink) +
   ggplot2::geom_text(
     data = dplyr::filter(struct_rows, kind == "subhead"),
-    ggplot2::aes(x = SUB_X, y = y, label = label),
+    ggplot2::aes(x = sub_x, y = y, label = label),
     hjust = 0, fontface = "bold", size = 2.95, colour = FLOW_PAL$ink) +
   ggplot2::geom_text(
     data = dplyr::filter(struct_rows, kind == "row"),
-    ggplot2::aes(x = LAB_X, y = y, label = label),
+    ggplot2::aes(x = lab_x, y = y, label = label),
     hjust = 0, size = 2.9, colour = FLOW_PAL$ink_soft) +
   ggplot2::geom_text(
     data = dplyr::filter(struct_rows, kind == "row"),
-    ggplot2::aes(x = VAL_X, y = y, label = value),
+    ggplot2::aes(x = val_x, y = y, label = value),
     hjust = 1, fontface = "bold", size = 2.9, colour = FLOW_PAL$ink) +
   ggplot2::coord_cartesian(xlim = c(1, 99), ylim = c(2.2, 100),
                            expand = FALSE, clip = "off") +
@@ -4030,12 +4390,17 @@ flow_counts_table <- tibble::tibble(
                "Specimens: incident (Cox-eligible) cohort",
                "Participants: incident (Cox-eligible) cohort",
                "Incident dementia/CIND events",
-               "Rows entering the Cox weight model"),
+               "Rows entering the Cox weight model",
+               "Participants: prevalent case at baseline",
+               "Participants: incident case during follow-up",
+               "Participants: cognitively intact throughout"),
   n = c(flow_n$enrolled, flow_n$n_excluded, flow_n$n_part_total,
         flow_n$n_spec_total, flow_n$n_spec_postdx, flow_n$n_part_postdx,
         flow_n$n_spec_prev, flow_n$n_spec_incpdx, flow_n$n_spec_predx,
         flow_n$n_part_predx, flow_n$n_spec_cox, flow_n$n_part_cox,
-        flow_n$n_events, flow_n$n_part_cox))
+        flow_n$n_events, flow_n$n_part_cox,
+        flow_n$n_part_prevalent, flow_n$n_part_incident,
+        flow_n$n_part_intact))
 
 rev_save_table(flow_counts_table, "participant_specimen_flow", "cohort")
 rev_save_table(draws_per_participant, "draws_per_participant", "cohort")
@@ -4149,7 +4514,8 @@ PREDX_ACCENT <- "#2F6B8F"
 PREDX_MUTED  <- "#B8BEC4"
 
 predx_scatter_for <- function(results_by_platform, covar_set = "covar",
-                              exposures = NULL, ncol = 2) {
+                              exposures = NULL, ncol = 2,
+                              subtitle_extra = NULL) {
 
   dat <- results_by_platform |>
     purrr::imap(function(results_list, platform) {
@@ -4246,7 +4612,8 @@ predx_scatter_for <- function(results_by_platform, covar_set = "covar",
                        paste0(": ", names(results_by_platform)) else ""),
       subtitle = paste0(
         "Blue = FDR < 0.05 in the full sample. Dashed line is 1:1.\n",
-        "Covariate set: ", covar_set)) +
+        "Covariate set: ", covar_set,
+        if (!is.null(subtitle_extra)) paste0("\n", subtitle_extra) else "")) +
     ggplot2::theme_bw(base_size = 12) +
     ggplot2::theme(
       panel.grid.minor = ggplot2::element_blank(),
@@ -4265,12 +4632,176 @@ rev_dir("figures", "mwas", "predx")
 predx_platforms <- list(C18   = mwas_results_list_c18,
                         HILIC = mwas_results_list_hilic)
 
+## THE FULL-SAMPLE ARM IS THE POOLED PRIMARY ANALYSIS.
+##
+## The manuscript's primary analysis is Rubin-pooled over m = 10 (R10), and at
+## m = 10 it calls 106 HILIC features at FDR < 0.05. The single-imputation fit
+## calls 107, so without this swap the panel annotation contradicts the text.
+##
+## Only the full-sample arm is swapped. R10 varies the exposure and the
+## covariate set, never the population, so the pre-diagnosis subset has no
+## pooled counterpart and stays single-imputation; the subtitle says so rather
+## than leaving a reader to assume both sides were fitted the same way. The
+## claim the panel supports -- that the features significant in the primary
+## analysis keep their sign when post-diagnosis specimens are dropped -- is
+## unaffected, since it is the primary analysis that defines the feature set.
+swap_pooled_primary <- function(results_list, platform_key,
+                                covar_set = "covar",
+                                exposure = "comp_pca_all") {
+  pooled_path <- rev_here("tables", "imputation", "mwas_pooled.xlsx")
+  if (!file.exists(pooled_path)) {
+    warning("No pooled estimates at ", pooled_path,
+            " -- predx figure falls back to single imputation.")
+    return(results_list)
+  }
+  pooled <- readxl::read_xlsx(pooled_path) |>
+    dplyr::filter(.data$platform == platform_key) |>
+    dplyr::transmute(feature = .data$met, p_logFC = .data$qbar,
+                     p_t = .data$t_pooled, p_P = .data$p_pooled,
+                     p_fdr = .data$fdr_pooled)
+
+  cell <- results_list[["total"]][["all"]][[covar_set]][[exposure]]
+  if (is.null(cell) || nrow(cell) == 0) return(results_list)
+
+  out <- tibble::rownames_to_column(cell, "feature") |>
+    dplyr::left_join(pooled, by = "feature")
+  matched <- sum(!is.na(out$p_P))
+  if (matched == 0) stop("predx: no pooled estimates matched for ", platform_key)
+  out <- out |>
+    dplyr::mutate(logFC     = dplyr::coalesce(.data$p_logFC, .data$logFC),
+                  t         = dplyr::coalesce(.data$p_t, .data$t),
+                  P.Value   = dplyr::coalesce(.data$p_P, .data$P.Value),
+                  adj.P.Val = dplyr::coalesce(.data$p_fdr, .data$adj.P.Val)) |>
+    dplyr::select(-p_logFC, -p_t, -p_P, -p_fdr) |>
+    as.data.frame()
+  rownames(out) <- out$feature
+  out$feature <- NULL
+  message("  predx: ", platform_key, " full-sample arm pooled (",
+          matched, " features, ", sum(out$adj.P.Val < 0.05),
+          " at FDR < 0.05)")
+  results_list[["total"]][["all"]][[covar_set]][[exposure]] <- out
+  results_list
+}
+
+predx_platforms_pooled <- list(
+  C18   = swap_pooled_primary(mwas_results_list_c18,   "c18"),
+  HILIC = swap_pooled_primary(mwas_results_list_hilic, "hilic"))
+
 ## The primary exposure, both platforms side by side, for the letter.
-predx_scatter_for(predx_platforms, "covar",
-                  exposures = "comp_pca_all", ncol = 2) |>
+## Drawn through si_agreement_scatter so it matches the other SI coefficient
+## scatters (R1-revision_functions.R); the older bespoke version is kept above
+## for the multi-exposure grids, where a four-level legend in twenty panels
+## would cost more than it explains.
+predx_si_data <- function(results_by_platform, pooled_tbl,
+                          covar_set = "covar", exposure = "comp_pca_all") {
+  plat_key <- c("C18" = "c18", "HILIC" = "hilic")
+  plat_lab <- c("C18" = "C18/neg-", "HILIC" = "HILIC/pos+")
+  results_by_platform |>
+    purrr::imap(function(results_list, platform) {
+      a <- results_list[["total"]][["all"]][[covar_set]][[exposure]]
+      b <- results_list[["total"]][["all predx"]][[covar_set]][[exposure]]
+      if (is.null(a) || is.null(b)) return(NULL)
+      a$feature <- rownames(a); b$feature <- rownames(b)
+      n_sig <- sum(a$adj.P.Val < 0.05)
+      same  <- a$feature[a$adj.P.Val < 0.05]
+      dplyr::inner_join(a, b, by = "feature", suffix = c("_all", "_pre")) |>
+        dplyr::transmute(
+          feature,
+          x = .data$logFC_all, y = .data$logFC_pre,
+          column_type = unname(plat_lab[platform]),
+          panel = unname(plat_lab[platform]),
+          class = si_scatter_class(.data$P.Value_all, .data$P.Value_pre,
+                                   "Full sample P < 0.05",
+                                   "Pre-diagnosis P < 0.05"),
+          fdr_all = .data$adj.P.Val_all,
+          sign_agree = sign(.data$logFC_all) == sign(.data$logFC_pre))
+    }) |>
+    purrr::compact() |>
+    purrr::list_rbind()
+}
+
+predx_dat <- predx_si_data(predx_platforms_pooled)
+
+## Sign concordance among the features the primary analysis calls significant,
+## which is the claim the Results paragraph makes; printed in the subtitle
+## because stat_cor already occupies the corner of each facet.
+predx_note <- predx_dat |>
+  dplyr::filter(.data$fdr_all < 0.05) |>
+  dplyr::group_by(.data$panel) |>
+  dplyr::summarise(n = dplyr::n(), same = sum(.data$sign_agree),
+                   .groups = "drop") |>
+  dplyr::mutate(txt = paste0(.data$panel, ": ", .data$same, " of ", .data$n,
+                             " FDR-significant features keep their sign")) |>
+  dplyr::pull(.data$txt) |>
+  paste(collapse = "  \u00b7  ")
+
+si_agreement_scatter(
+  predx_dat,
+  xlab = "Coefficient, full sample (1,546 specimens)",
+  ylab = "Coefficient, pre-diagnosis only (1,408 specimens)",
+  title = "Full-sample versus pre-diagnosis coefficients",
+  subtitle = paste0(
+    predx_note, "\n",
+    "Full sample: Rubin-pooled over m = 10 imputations.",
+    " Pre-diagnosis: single completed dataset.")) |>
   ggplot2::ggsave(filename = rev_here("figures", "mwas", "predx",
                                       "predx_vs_all_pc1.png"),
-                  width = 10, height = 5.6, dpi = 400, bg = "white")
+                  width = 13, height = 7, dpi = 400, bg = "white")
+
+
+## Cross-fitted WQS against the unsupervised PC1 index, ALL features.
+##
+## The generic logfc_* comparison figure restricts to features with P < 0.05
+## under the reference exposure, which reports r = 0.987 on HILIC. The
+## manuscript quotes r = 0.945, which is the correlation across the whole
+## feature set, so this figure draws all of them and the two now agree.
+wqs_si_data <- function(results_by_platform, covar_set = "covar") {
+  plat_lab <- c("C18" = "C18/neg-", "HILIC" = "HILIC/pos+")
+  results_by_platform |>
+    purrr::imap(function(results_list, platform) {
+      cell <- results_list[["total"]][["all"]][[covar_set]]
+      a <- cell[["comp_pca_all"]]; b <- cell[["comp_wqs_cf_all"]]
+      if (is.null(a) || is.null(b)) return(NULL)
+      a$feature <- rownames(a); b$feature <- rownames(b)
+      dplyr::inner_join(a, b, by = "feature", suffix = c("_pca", "_wqs")) |>
+        dplyr::transmute(
+          feature,
+          x = .data$logFC_pca, y = .data$logFC_wqs,
+          column_type = unname(plat_lab[platform]),
+          panel = unname(plat_lab[platform]),
+          class = si_scatter_class(.data$P.Value_pca, .data$P.Value_wqs,
+                                   "PC1 P < 0.05", "WQS-CF P < 0.05"),
+          fdr_pca = .data$adj.P.Val_pca,
+          sign_agree = sign(.data$logFC_pca) == sign(.data$logFC_wqs))
+    }) |>
+    purrr::compact() |>
+    purrr::list_rbind()
+}
+
+wqs_dat <- wqs_si_data(predx_platforms_pooled)
+
+wqs_note <- wqs_dat |>
+  dplyr::filter(.data$fdr_pca < 0.05) |>
+  dplyr::group_by(.data$panel) |>
+  dplyr::summarise(n = dplyr::n(), same = sum(.data$sign_agree),
+                   .groups = "drop") |>
+  dplyr::mutate(txt = paste0(.data$panel, ": ", .data$same, " of ", .data$n,
+                             " FDR-significant features keep their sign")) |>
+  dplyr::pull(.data$txt) |>
+  paste(collapse = "  \u00b7  ")
+
+si_agreement_scatter(
+  wqs_dat,
+  xlab = "Coefficient, unsupervised PC1 index",
+  ylab = "Coefficient, cross-fitted WQS index",
+  title = "Unsupervised versus cross-fitted outcome-informed index",
+  subtitle = paste0(
+    wqs_note, "\n",
+    "All features. PC1: Rubin-pooled over m = 10 imputations.",
+    " WQS-CF: single completed dataset.")) |>
+  ggplot2::ggsave(filename = rev_here("figures", "mwas", "predx",
+                                      "wqs_cf_vs_pc1_all_features.png"),
+                  width = 13, height = 7, dpi = 400, bg = "white")
 
 ## The full exposure set: composites and the eight single pollutants. One
 ## figure per platform -- twenty panels on a single sheet would shrink each
