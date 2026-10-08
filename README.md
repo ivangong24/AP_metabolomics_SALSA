@@ -84,4 +84,3 @@ LICENSE
 
 - Raw data, intermediate `.RData`, and exported tables/figures (including everything under `revision_output/`) are produced locally and excluded from version control.
 - The metabolomics data are deposited in Metabolomics Workbench (study ST005208). SALSA cohort data are archived at NACDA (ICPSR 22760).
-- The analytical infrastructure (covariates, metabolomics pipeline, MWAS code) is shared with the companion `sleep_metabolomics_salsa` project.
